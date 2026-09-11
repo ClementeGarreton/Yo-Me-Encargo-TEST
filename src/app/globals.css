@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+
+    /* Color de acción por defecto = azul del logo (#6FA8DC y su escala).
+       Lo usan el panel admin y cualquier vista fuera del cotizador. */
+    --primary-50: 225 240 250;
+    --primary-100: 208 231 247;
+    --primary-200: 184 217 240;
+    --primary-300: 159 203 233;
+    --primary-400: 135 189 226;
+    --primary-500: 111 168 220;
+    --primary-600: 90 139 196;
+    --primary-700: 69 110 172;
+    --primary-800: 48 81 148;
+    --primary-900: 27 52 124;
+
+    /* Color de texto sobre un fondo `primary` sólido (botones). Sobre el azul del admin
+       el blanco tiene buen contraste. */
+    --primary-fg: 255 255 255;
+  }
+
+  /* El cotizador (/cotizador) se envuelve en .theme-cotizador y adopta el VERDE de
+     la landing como color de acción, para que ambos se sientan la misma plataforma.
+     Solo redefine variables: no afecta al admin ni a ningún componente compartido
+     usado fuera de este scope. Valores tomados de la paleta de marca (#8CC63F acción,
+     #6FA52E hover, #F0F8E8 fondos suaves). */
+  .theme-cotizador {
+    --primary-50: 240 248 232;
+    --primary-100: 224 241 209;
+    --primary-200: 200 228 168;
+    --primary-300: 168 214 111;
+    --primary-400: 152 202 86;
+    --primary-500: 140 198 63;
+    --primary-600: 140 198 63;
+    --primary-700: 111 165 46;
+    --primary-800: 104 154 39;
+    --primary-900: 68 110 15;
+
+    /* El verde lima (#8CC63F) es claro: el texto sobre botones verdes debe ser oscuro
+       (como en la landing) para tener contraste legible, no blanco. */
+    --primary-fg: 14 26 5;
+  }
+
+  body {
+    font-family: var(--font-hanken), system-ui, sans-serif;
+    background: #fff;
+    color: #111827;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-archivo), system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+
+  p { margin: 0; }
+  a { color: inherit; }
+  img { display: block; max-width: 100%; }
+
+  section {
+    position: relative;
+    transform: translateZ(0);
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+    scroll-margin-top: 80px;
+  }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+  .contain-paint { contain: paint; }
+}
+
+/* ── Hero image: left-to-right loading reveal ── */
+/* The clip's right edge sweeps from the left side to the right, so the whole
+   card "expands" from left to right. The `round` keeps the card's 28px corners
+   visible while the clip is active. Runs once on load. */
+@keyframes heroImgReveal {
+  from { clip-path: inset(0 100% 0 0 round 12px); }
+  to   { clip-path: inset(0 0 0 0 round 12px); }
+}
+
+.hero-img-reveal {
+  animation: heroImgReveal 1400ms cubic-bezier(0.65, 0, 0.35, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-img-reveal {
+    animation: none !important;
+  }
+}
+
+/* ── Marquee (client logos) ── */
+@keyframes marquee {
+  to { transform: translateX(-50%); }
+}
+.marquee-track {
+  animation: marquee 38s linear infinite;
+}
+.marquee-wrapper:hover .marquee-track {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar { display: none; }

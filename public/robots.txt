@@ -1,0 +1,11 @@
+# robots.txt para Yo me Encargo
+User-agent: *
+Allow: /
+
+# Rutas que no deben indexarse
+Disallow: /api/
+Disallow: /admin/
+Disallow: /pago/
+
+# Sitemap
+Sitemap: https://yomeencargo.cl/sitemap.xml
