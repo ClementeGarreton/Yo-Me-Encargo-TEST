@@ -194,10 +194,11 @@ export async function getOrCreateWhatsAppSession(phone: string): Promise<QuoteSe
 }
 
 export async function closeQuoteSession(id: string) {
-  await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from('quote_sessions')
     .update({ status: 'closed', updated_at: new Date().toISOString() })
     .eq('id', id)
+  if (error) throw new Error(`No se pudo cerrar la sesión: ${error.message}`)
 }
 
 export async function saveQuoteSession(

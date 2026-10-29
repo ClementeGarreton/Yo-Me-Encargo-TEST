@@ -6,7 +6,6 @@ import {
   verifyWebhookSignature,
 } from '@/lib/whatsapp/cloudApi'
 import {
-  getOrCreateWhatsAppSession,
   createWhatsAppSession,
   closeQuoteSession,
   getNextSection,
@@ -30,6 +29,10 @@ import {
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
+import { supabaseAdmin } from '@/lib/supabase'
+import { WHATSAPP_WELCOME, decideBotAction } from '@/lib/whatsapp/botRouter'
+import { claimFirstWelcome, ensureBotState, refreshQuoteActivity, releaseFailedWelcome, setBotMode } from '@/lib/whatsapp/botStateStore'
+import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -37,7 +40,6 @@ export const maxDuration = 60
 const GREETING_ONLY = /^(hola|holi|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|ola)[!.\s]*$/i
 const HUMAN_REQUEST = /\b(ejecutivo|persona real|humano|asesor|hablar con alguien|atenci[oó]n humana)\b/i
 const CONFIRM_QUOTE = /^(confirmar|confirmo|confirmado|s[ií][,!.\s]+generar|generar cotizaci[oó]n|generar pdf)[!.\s]*$/i
-const NEW_QUOTE = /\b(nueva cotizaci[oó]n|cotizar de nuevo|otra cotizaci[oó]n|nuevo traslado|nuevo flete|nueva mudanza)\b/i
 
 function normalizePhone(value: string) {
   const digits = value.replace(/\D/g, '')
@@ -61,6 +63,8 @@ function extractMessages(payload: any) {
   for (const entry of payload?.entry || []) {
     for (const change of entry?.changes || []) {
       const value = change?.value
+      // Un mismo webhook puede recibir eventos de otros números de la aplicación.
+      if (!process.env.WHATSAPP_PHONE_NUMBER_ID || String(value?.metadata?.phone_number_id || '') !== process.env.WHATSAPP_PHONE_NUMBER_ID) continue
       const nameByWaId = new Map<string, string>()
       for (const contact of value?.contacts || []) {
         if (contact?.wa_id) nameByWaId.set(String(contact.wa_id), contact?.profile?.name || '')
@@ -104,6 +108,7 @@ async function sendAndLog(conversationId: string, to: string, text: string) {
 
 async function handleHumanHandoff(session: QuoteSessionRow, conversationId: string, to: string) {
   await saveQuoteSession(session.id, session.state, { status: 'handoff' })
+  await setBotMode(normalizePhone(to), 'human')
   await updateConversation(conversationId, { status: 'handoff' })
   await logAction({ conversationId, action: 'human_handoff_requested', payload: { quoteSessionId: session.id } })
   await sendAndLog(
@@ -116,6 +121,8 @@ async function handleHumanHandoff(session: QuoteSessionRow, conversationId: stri
 async function finalizeQuote(session: QuoteSessionRow, conversationId: string, to: string) {
   await sendAndLog(conversationId, to, 'Perfecto. Estoy generando tu cotización y el PDF con el detalle. Dame unos segundos…')
   const quote = await generateQuoteFromSession(session)
+  // La cotización ya existe; cerrar autorización de OpenAI ANTES de enviar el PDF.
+  await setBotMode(normalizePhone(to), 'idle')
   await logAction({
     conversationId,
     action: 'quote_generated',
@@ -146,7 +153,7 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
     '',
     `Puedes revisar los datos también en la web: ${resumeUrl}`,
     '',
-    '¿Quieres afinar los detalles con nuestro ejecutivo? Escribe *EJECUTIVO* y seguimos contigo por este mismo chat.',
+    '¿Quieres afinar los detalles con una persona? Escribe *ASESOR* y seguimos contigo por este mismo chat.',
   ].join('\n')
 
   await sendAndLog(conversationId, to, summary)
@@ -161,18 +168,41 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
   })
 }
 
-async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
-  const to = message.from
-  const phone = normalizePhone(message.from)
-  let session = await getOrCreateWhatsAppSession(phone)
-  if (NEW_QUOTE.test(message.text)) {
-    await closeQuoteSession(session.id)
-    session = await createWhatsAppSession(phone)
-  }
-  const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
-  const conversationId = conversation.id as string
+/** Reserva el id de Meta antes de producir cualquier efecto: evita reenvíos repetidos. */
+async function claimIncomingMessage(id: string, phone: string): Promise<boolean> {
+  const { error } = await supabaseAdmin
+    .from('whatsapp_inbound_receipts')
+    .insert({ message_id: id, phone })
+  if (error?.code === '23505') return false
+  if (error) throw new Error(`Error guardando idempotencia de WhatsApp: ${error.message}`)
+  return true
+}
 
-  const inbound = await logMessage({
+async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {
+  if (bot.quote_session_id && bot.mode === 'quoting') {
+    if (mode === 'human') {
+      const { error } = await supabaseAdmin
+        .from('quote_sessions')
+        .update({ status: 'handoff', updated_at: new Date().toISOString() })
+        .eq('id', bot.quote_session_id)
+        .in('status', ['collecting', 'ready'])
+      if (error) throw new Error(error.message)
+    } else {
+      await closeQuoteSession(bot.quote_session_id)
+    }
+    const { error } = await supabaseAdmin
+      .from('ai_conversations')
+      .update({ status: mode === 'human' ? 'handoff' : 'closed', updated_at: new Date().toISOString() })
+      .eq('quote_session_id', bot.quote_session_id)
+      .eq('channel', 'whatsapp')
+      .eq('status', 'active')
+    if (error) throw new Error(error.message)
+  }
+  await setBotMode(phone, mode)
+}
+
+async function logInbound(conversationId: string, message: ReturnType<typeof extractMessages>[number]) {
+  await logMessage({
     conversationId,
     direction: 'inbound',
     role: 'user',
@@ -181,36 +211,100 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
     externalMessageId: message.id,
     metadata: message.imageId ? { mediaId: message.imageId } : {},
   })
-  if (inbound.duplicate) return
+}
 
-  if (NEW_QUOTE.test(message.text)) {
-    await sendAndLog(
-      conversationId,
-      to,
-      `Perfecto, empecemos una nueva cotización. Tu teléfono ya lo tenemos por WhatsApp.\n\n${sectionQuestion(1, session.state)}`
-    )
+async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
+  // Interruptor de emergencia de Vercel. Nunca llama a OpenAI con el bot apagado.
+  if (process.env.WHATSAPP_BOT_ENABLED === 'false') return
+  const to = message.from
+  const phone = normalizePhone(to)
+  if (!(await claimIncomingMessage(message.id, phone))) return
+
+  const bot = await ensureBotState(phone)
+  const decision = decideBotAction(message.text, bot)
+
+  if (decision === 'welcome') {
+    // No se crea quote_session ni se usa OpenAI por un saludo o texto cualquiera.
+    const claimAt = await claimFirstWelcome(phone)
+    if (!claimAt) return
+    try {
+      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+    } catch (error) {
+      await releaseFailedWelcome(phone, claimAt)
+      throw error
+    }
     return
   }
 
-  // Si llegó desde un CTA de la web, conserva la referencia de esa cotización en el historial.
+  if (decision === 'start_quote') {
+    // Revocar sesiones previas incompletas. COTIZAR es la única puerta de entrada.
+    if (bot.mode === 'quoting') await deactivateBot(phone, bot, 'idle')
+    const { error } = await supabaseAdmin
+      .from('quote_sessions')
+      .update({ status: 'closed', updated_at: new Date().toISOString() })
+      .eq('channel', 'whatsapp')
+      .eq('phone', phone)
+      .in('status', ['collecting', 'ready'])
+    if (error) throw new Error(error.message)
+
+    const session = await createWhatsAppSession(phone)
+    await setBotMode(phone, 'quoting', session.id)
+    const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
+    const conversationId = conversation.id as string
+    await logInbound(conversationId, message)
+    await sendAndLog(conversationId, to, `Comencemos tu cotización. Puedes escribir *SALIR* en cualquier momento.\n\n${sectionQuestion(1, session.state)}`)
+    return
+  }
+
+  if (decision === 'human' || decision === 'exit' || decision === 'menu') {
+    await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
+    if (decision === 'human') {
+      await sendWhatsAppText(to, 'Te atenderá una persona por este mismo chat. El asistente automático queda desactivado. Para cotizar con IA, escribe *COTIZAR*.')
+    } else if (decision === 'exit') {
+      await sendWhatsAppText(to, 'Atención automática finalizada. Puedes escribir *COTIZAR* para comenzar otra cotización o *ASESOR* para atención humana.')
+    } else {
+      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+    }
+    return
+  }
+
+  if (decision === 'expire_silent') {
+    // Caducidad evaluada incluso aunque el usuario nunca escribiera SALIR.
+    await deactivateBot(phone, bot, 'idle')
+    return
+  }
+
+  if (decision === 'silent') return // Atención humana: silencio total, no llama OpenAI.
+
+  // Solo se llega aquí con una sesión iniciada explícitamente por COTIZAR.
+  if (!bot.quote_session_id) {
+    await setBotMode(phone, 'idle')
+    return
+  }
+  const { data, error } = await supabaseAdmin
+    .from('quote_sessions')
+    .select('*')
+    .eq('id', bot.quote_session_id)
+    .eq('phone', phone)
+    .eq('channel', 'whatsapp')
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  if (!data || !['collecting', 'ready'].includes(data.status)) {
+    await setBotMode(phone, 'idle')
+    return
+  }
+  let session = data as QuoteSessionRow
+  if (!(await refreshQuoteActivity(phone, session.id))) return
+
+  const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
+  const conversationId = conversation.id as string
+  await logInbound(conversationId, message)
+
+  // Conserva la referencia a una cotización originada en la web, sin activación implícita.
   const embeddedQuoteId = extractQuoteIdFromText(message.text)
   if (embeddedQuoteId) {
     await updateConversation(conversationId, { quote_id: embeddedQuoteId })
     session = await saveQuoteSession(session.id, session.state, { quote_id: embeddedQuoteId })
-  }
-
-  if (session.status === 'handoff') {
-    // El ejecutivo puede continuar manualmente en WhatsApp Business/Coexistence.
-    return
-  }
-
-  if (session.status === 'quoted') {
-    if (HUMAN_REQUEST.test(message.text)) {
-      await handleHumanHandoff(session, conversationId, to)
-      return
-    }
-    await sendAndLog(conversationId, to, 'Tu cotización ya está generada. Si quieres afinar detalles o coordinar con una persona, escribe *EJECUTIVO*.')
-    return
   }
 
   if (HUMAN_REQUEST.test(message.text)) {
@@ -219,11 +313,7 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
   }
 
   if (GREETING_ONLY.test(message.text) && session.current_section === 1 && !session.state.personalInfo.name) {
-    await sendAndLog(
-      conversationId,
-      to,
-      `¡Hola! Soy el asistente de Yo Me Encargo. Puedo cotizar tu mudanza completa por WhatsApp y enviarte el PDF aquí mismo.\n\n${sectionQuestion(1, session.state)}`
-    )
+    await sendAndLog(conversationId, to, sectionQuestion(1, session.state))
     return
   }
 
