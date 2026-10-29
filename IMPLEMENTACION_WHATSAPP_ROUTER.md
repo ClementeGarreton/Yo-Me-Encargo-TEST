@@ -1,52 +1,41 @@
-# Yo Me Encargo — Activación explícita del cotizador de WhatsApp
+# Corrección WhatsApp SIN migración de Supabase
 
-## Cambio de comportamiento
+Esta versión sustituye el parche anterior. **NO ejecutar ninguna migración nueva.** En particular, NO usar `add_whatsapp_bot_sessions.sql`: no se incluye en la entrega.
 
-- **Primer mensaje de un teléfono nuevo:** se envía una bienvenida con `COTIZAR`, `ASESOR`, `MENU` y `SALIR`, sin usar OpenAI. Los siguientes mensajes libres no reciben respuesta automática.
-- **COTIZAR** (palabra aislada, sin importar mayúsculas): crea una sesión *nueva* y habilita el cotizador. Solo dentro de esta sesión pueden ejecutarse las llamadas de OpenAI para interpretar respuestas.
-- **ASESOR** (también `EJECUTIVO` por compatibilidad): termina cualquier sesión activa y silencia permanentemente el bot hasta que el cliente escriba otro comando. El humano puede atender desde el canal que ya utiliza.
-- **MENU/MENÚ:** cancela la cotización activa, si la hubiera, y vuelve a mostrar el menú sin OpenAI.
-- **SALIR:** cancela la sesión activa y responde una confirmación, sin OpenAI.
-- **Fin por inactividad:** 5 minutos desde el último mensaje de la sesión activa.
-- **Fin por duración:** 15 minutos desde la activación, incluso si hubo actividad reciente.
-- **Cotización PDF generada:** revoca la autorización de OpenAI antes de enviar el resultado.
-- **Seguridad:** los eventos de otros números de Meta, los estados de entrega y los mensajes duplicados no inician cotizaciones.
+## Qué se modifica
 
-**Semántica de caducidad:** no hay proceso permanente en Vercel. El plazo se comprueba contra marcas de tiempo persistentes al recibir cada mensaje. En consecuencia, aunque el registro todavía diga `quoting` hasta el próximo mensaje, después de 5/15 minutos **ningún mensaje libre volverá a llamar a OpenAI**. No se envía un aviso espontáneo al vencer el tiempo. Para borrar registros vencidos sin tráfico haría falta además una tarea programada, que no es necesaria para evitar llamadas a la IA.
+Solo tres archivos:
+- `src/app/api/whatsapp/webhook/route.ts`: misma URL de Meta, recepción segura, registro de solicitudes y control de OpenAI.
+- `src/lib/whatsapp/botRouter.ts`: reglas deterministas de cuatro comandos y plazos 5/15 minutos.
+- `src/lib/whatsapp/botStateStore.ts`: usa las tablas preexistentes `quote_sessions`, `ai_conversations`, `ai_messages` y `ai_actions`.
 
-## Cómo desplegar (orden indispensable)
+No se agregan tablas, columnas, migraciones, credenciales ni paquetes. No se modifican los cálculos ni los PDF.
 
-1. **Preparar rollback:** guarda una copia del despliegue anterior de Vercel. Si el bot sigue molestando clientes en este momento, crea temporalmente la variable `WHATSAPP_BOT_ENABLED=false` en Vercel Production y redeploy; bloquea las respuestas del bot pero no corta WhatsApp ni la atención humana.
-2. **Supabase:** en el **SQL Editor** del proyecto que utiliza Vercel, ejecuta **una sola vez** `database/migrations/add_whatsapp_bot_sessions.sql`. Esto crea las tablas de estado e idempotencia, y cierra cotizaciones WhatsApp incompletas antiguas. **No toca cotizaciones de la web.** Haz respaldo si necesitas conservar el estado anterior.
-3. **Código:** sube al repositorio estos archivos (o el ZIP fuente completo):
-   - `src/app/api/whatsapp/webhook/route.ts`
-   - `src/lib/whatsapp/botRouter.ts` (nuevo)
-   - `src/lib/whatsapp/botStateStore.ts` (nuevo)
-   - `src/lib/quoteSession.ts` (pequeña validación adicional de errores)
-4. **Variables de Vercel:** conserva `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET` y las credenciales existentes de Supabase y OpenAI. No es necesario volver a generar tokens. Para activar el bot, deja `WHATSAPP_BOT_ENABLED=true` o sin definir. Para **apagar todas las respuestas automáticas**, define `WHATSAPP_BOT_ENABLED=false` y vuelve a desplegar.
-5. **Pruebas:** primero en un entorno de pruebas o con números de confianza. Ejecuta `npm run test:whatsapp-bot` usando Node 22+ y envía los mensajes listados abajo. Vercel debe tener el último redeploy activo.
+## Reglas
 
-## Prueba de aceptación manual
+- Primer mensaje de un contacto nuevo: menú COTIZAR / ASESOR / MENU / SALIR, sin OpenAI.
+- Mensajes libres fuera de cotización: silencio.
+- Solo `COTIZAR` (palabra completa) habilita el cotizador y crea una sesión.
+- `ASESOR`: cierra la cotización y deja libre el canal humano.
+- `MENU`: cierra la cotización y muestra las cuatro opciones.
+- `SALIR`: cierra la cotización y confirma.
+- Más de 5 minutos sin interacción o más de 15 desde COTIZAR: sesión caducada. Se comprueba al recibir cada mensaje, no requiere proceso programado.
+- Al generar el PDF, también se cierra la autorización del bot.
+- Sesiones antiguas sin un registro explícito de COTIZAR no autorizan llamadas a OpenAI.
+- Los mensajes duplicados se detectan por el índice único ya existente de `ai_messages.external_message_id`.
 
-| Prueba | Resultado esperado |
-| --- | --- |
-| Primer `Hola` desde un teléfono no registrado en `whatsapp_bot_sessions` | Menú de cuatro opciones, ninguna llamada a OpenAI |
-| Otro `Hola` | Silencio |
-| `quiero cotizar` (frase, no comando) | Silencio |
-| `COTIZAR` | Pregunta 1/7, nueva cotización |
-| Responder nombre y correo | Continúa la cotización y se permite OpenAI |
-| `ASESOR` mientras cotiza | Finaliza el control del bot; el siguiente mensaje libre no genera respuesta automática |
-| `COTIZAR` nuevamente | Nueva cotización desde cero |
-| `MENU` mientras cotiza | Cancela cotización y muestra menú |
-| `COTIZAR` seguido de `SALIR` | Sesión terminada, no se interpreta ningún mensaje libre |
-| `COTIZAR`, esperar más de 5 min, enviar una respuesta | No ejecuta OpenAI y silencia el bot |
-| `COTIZAR`, actividad a menos de 5 min, superar 15 min desde activación, enviar respuesta | No ejecuta OpenAI |
-| Cotización completada y PDF enviado, después mensaje libre | No ejecuta OpenAI |
+## Despliegue
 
-## Notas técnicas
+1. **No ejecutar SQL.** Guardar un punto de restauración del despliegue actual de Vercel.
+2. Copiar únicamente los tres archivos del parche o subir el proyecto completo corregido al repositorio.
+3. Desplegar en Vercel. Mantener todas las variables existentes (`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET`, Supabase, OpenAI).
+4. En Vercel Logs debe registrarse `[WhatsApp webhook] POST recibido` por cada solicitud POST que alcance la función. Este registro no revela datos de clientes ni secretos.
+5. Probar con un número controlado (un primer HOLA y luego COTIZAR, ASESOR, MENU, SALIR), comprobando que OpenAI no se invoque sin COTIZAR.
 
-- `whatsapp_bot_sessions` es la autorización independiente de `quote_sessions`. Los estados heredados no activan IA.
-- `whatsapp_inbound_receipts` guarda los IDs únicos recibidos, de modo que el reenvío de un webhook no genere otra respuesta.
-- La bienvenida solo se envía al primer mensaje de un número, y puede recuperarse con `MENU`. Si se quieren nuevas bienvenidas después de cierto período, habrá que definir la política temporal antes de modificarla.
-- Los mensajes de atención humana no se almacenan en `ai_messages` si están fuera de una cotización; permanecen en el canal de WhatsApp utilizado por el equipo.
-- No se modificó el cotizador web, el cálculo de precios, los PDF ni las credenciales.
+### Interruptor de emergencia opcional
+
+`WHATSAPP_BOT_ENABLED=false` apaga todas las respuestas automatizadas; requiere redeploy si se cambia como variable de entorno. No desconecta el número.
+
+## Requisitos previos y límites
+
+Las cuatro tablas `quote_sessions`, `ai_conversations`, `ai_messages` y `ai_actions` y el índice único `ai_messages.external_message_id` ya formaban parte del sistema de cotización original; esta corrección presupone que existen y funcionan en el Supabase asociado a Vercel. No hubo conexión directa a tu Supabase de producción durante estas pruebas: la compilación y las pruebas locales no sustituyen una prueba de integración real. Una simultaneidad excepcional de dos primeros mensajes de un teléfono nuevo podría duplicar el saludo, ya que el esquema existente carece de una restricción única por teléfono; no se añadió una tabla o índice nuevo para no alterar tu base de datos.
