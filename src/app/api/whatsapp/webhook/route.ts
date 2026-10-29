@@ -31,7 +31,7 @@ import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, decideBotAction } from '@/lib/whatsapp/botRouter'
-import { claimInboundMessage, closeRoutingConversation, loadBotContext } from '@/lib/whatsapp/botStateStore'
+import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode } from '@/lib/whatsapp/botStateStore'
 import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 export const dynamic = 'force-dynamic'
@@ -108,6 +108,7 @@ async function sendAndLog(conversationId: string, to: string, text: string) {
 
 async function handleHumanHandoff(session: QuoteSessionRow, conversationId: string, to: string) {
   await saveQuoteSession(session.id, session.state, { status: 'handoff' })
+  await setBotMode(normalizePhone(to), 'human')
   await updateConversation(conversationId, { status: 'handoff' })
   await logAction({ conversationId, action: 'human_handoff_requested', payload: { quoteSessionId: session.id } })
   await sendAndLog(
@@ -121,6 +122,7 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
   await sendAndLog(conversationId, to, 'Perfecto. Estoy generando tu cotización y el PDF con el detalle. Dame unos segundos…')
   const quote = await generateQuoteFromSession(session)
   // La cotización ya existe; cerrar autorización de OpenAI ANTES de enviar el PDF.
+  await setBotMode(normalizePhone(to), 'idle')
   await logAction({
     conversationId,
     action: 'quote_generated',
@@ -166,7 +168,7 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
   })
 }
 
-async function deactivateBot(bot: WhatsAppBotState, conversationId: string, mode: 'idle' | 'human') {
+async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' | 'human') {
   if (bot.quote_session_id && bot.mode === 'quoting') {
     if (mode === 'human') {
       const { error } = await supabaseAdmin
@@ -186,7 +188,7 @@ async function deactivateBot(bot: WhatsAppBotState, conversationId: string, mode
       .eq('status', 'active')
     if (error) throw new Error(error.message)
   }
-  await closeRoutingConversation(conversationId, mode === 'human')
+  await setBotMode(phone, mode)
 }
 
 async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
@@ -194,28 +196,32 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
   if (process.env.WHATSAPP_BOT_ENABLED === 'false') return
   const to = message.from
   const phone = normalizePhone(to)
-  const { state: bot, conversationId: previousConversationId } = await loadBotContext(phone)
-  const claimed = await claimInboundMessage({
-    conversationId: previousConversationId,
+  if (!(await claimIncomingMessage({
     phone,
-    id: message.id,
-    type: message.type,
-    text: message.text,
-    imageId: message.imageId,
-  })
-  if (!claimed.claimed) return // Mensaje duplicado de Meta: no enviar nada dos veces.
-  const conversationIdForRouting = claimed.conversationId
+    messageId: message.id,
+    content: message.text || (message.type === 'image' ? '[Imagen]' : `[${message.type}]`),
+    messageType: message.type === 'image' ? 'image' : message.type === 'interactive' ? 'interactive' : 'text',
+  }))) return
+
+  const bot = await ensureBotState(phone)
   const decision = decideBotAction(message.text, bot)
 
   if (decision === 'welcome') {
-    // Bienvenida una vez por contacto, persistida en las tablas originales.
-    await sendAndLog(conversationIdForRouting, to, WHATSAPP_WELCOME)
+    // No se crea quote_session ni se usa OpenAI por un saludo o texto cualquiera.
+    const claimAt = await claimFirstWelcome(phone)
+    if (!claimAt) return
+    try {
+      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+    } catch (error) {
+      await releaseFailedWelcome(phone, claimAt)
+      throw error
+    }
     return
   }
 
   if (decision === 'start_quote') {
     // Revocar sesiones previas incompletas. COTIZAR es la única puerta de entrada.
-    if (bot?.mode === 'quoting') await deactivateBot(bot, conversationIdForRouting, 'idle')
+    if (bot.mode === 'quoting') await deactivateBot(phone, bot, 'idle')
     const { error } = await supabaseAdmin
       .from('quote_sessions')
       .update({ status: 'closed', updated_at: new Date().toISOString() })
@@ -225,21 +231,16 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
     if (error) throw new Error(error.message)
 
     const session = await createWhatsAppSession(phone)
+    await setBotMode(phone, 'quoting', session.id)
     const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
     const conversationId = conversation.id as string
-    // Autorización de OpenAI asociada a esta sesión, usando ai_actions ya existente.
-    const { error: optInError } = await supabaseAdmin.from('ai_actions').insert({
-      conversation_id: conversationId, action: 'whatsapp_quote_opt_in',
-      structured_payload: { command: 'COTIZAR', messageId: message.id },
-    })
-    if (optInError) throw new Error(`No se pudo registrar autorización: ${optInError.message}`)
+    await moveIncomingToConversation(message.id, conversationId)
     await sendAndLog(conversationId, to, `Comencemos tu cotización. Puedes escribir *SALIR* en cualquier momento.\n\n${sectionQuestion(1, session.state)}`)
     return
   }
 
   if (decision === 'human' || decision === 'exit' || decision === 'menu') {
-    if (bot) await deactivateBot(bot, conversationIdForRouting, decision === 'human' ? 'human' : 'idle')
-    else await closeRoutingConversation(conversationIdForRouting, decision === 'human')
+    await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
       await sendWhatsAppText(to, 'Te atenderá una persona por este mismo chat. El asistente automático queda desactivado. Para cotizar con IA, escribe *COTIZAR*.')
     } else if (decision === 'exit') {
@@ -252,15 +253,15 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
 
   if (decision === 'expire_silent') {
     // Caducidad evaluada incluso aunque el usuario nunca escribiera SALIR.
-    if (bot) await deactivateBot(bot, conversationIdForRouting, 'idle')
+    await deactivateBot(phone, bot, 'idle')
     return
   }
 
   if (decision === 'silent') return // Atención humana: silencio total, no llama OpenAI.
 
   // Solo se llega aquí con una sesión iniciada explícitamente por COTIZAR.
-  if (!bot?.quote_session_id) {
-    await closeRoutingConversation(conversationIdForRouting, false)
+  if (!bot.quote_session_id) {
+    await setBotMode(phone, 'idle')
     return
   }
   const { data, error } = await supabaseAdmin
@@ -272,13 +273,15 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
     .maybeSingle()
   if (error) throw new Error(error.message)
   if (!data || !['collecting', 'ready'].includes(data.status)) {
-    await closeRoutingConversation(conversationIdForRouting, false)
+    await setBotMode(phone, 'idle')
     return
   }
   let session = data as QuoteSessionRow
+  if (!(await refreshQuoteActivity(phone, session.id))) return
 
   const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
   const conversationId = conversation.id as string
+  await moveIncomingToConversation(message.id, conversationId)
 
   // Conserva la referencia a una cotización originada en la web, sin activación implícita.
   const embeddedQuoteId = extractQuoteIdFromText(message.text)
@@ -394,11 +397,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Registro de entrada sin datos personales, incluso cuando falle la firma.
-  console.info('[WhatsApp webhook] POST recibido')
   const rawBody = await request.text()
   if (!verifyWebhookSignature(rawBody, request.headers.get('x-hub-signature-256'))) {
-    console.warn('[WhatsApp webhook] Firma de Meta rechazada')
     return new NextResponse('Invalid signature', { status: 401 })
   }
 
@@ -410,7 +410,6 @@ export async function POST(request: NextRequest) {
   }
 
   const messages = extractMessages(payload)
-  console.info('[WhatsApp webhook] POST válido; mensajes para este número:', messages.length)
   for (const message of messages) {
     try {
       await processIncoming(message)

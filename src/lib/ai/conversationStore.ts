@@ -23,7 +23,10 @@ export async function createConversation(input: {
 }
 
 export async function findOrCreateWhatsAppConversation(phone: string, quoteSessionId: string, customerName?: string | null) {
-  const { data: existing } = await supabaseAdmin
+  // Excluir la fila de control del enrutador (usa la misma tabla sin migraciones).
+  // La fila de control NO debe recibir tokens de OpenAI, ya que su campo model
+  // contiene el marcador que autoriza/desautoriza el bot.
+  const { data: candidates, error } = await supabaseAdmin
     .from('ai_conversations')
     .select('*')
     .eq('channel', 'whatsapp')
@@ -31,9 +34,10 @@ export async function findOrCreateWhatsAppConversation(phone: string, quoteSessi
     .eq('quote_session_id', quoteSessionId)
     .in('status', ['active', 'quoted', 'handoff'])
     .order('last_message_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .limit(20)
 
+  if (error) throw new Error(error.message)
+  const existing = candidates?.find(row => !String(row.model || '').startsWith('whatsapp-router-v1-'))
   if (existing) return existing
   return createConversation({ channel: 'whatsapp', externalUserId: phone, quoteSessionId, customerName })
 }
