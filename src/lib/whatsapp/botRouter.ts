@@ -4,6 +4,8 @@
  */
 export const QUOTE_IDLE_TIMEOUT_MS = 5 * 60 * 1000
 export const QUOTE_MAX_DURATION_MS = 15 * 60 * 1000
+// Pasados 5 min sin interacción, una conversación inactiva vuelve al menú.
+export const MENU_IDLE_RESET_MS = 5 * 60 * 1000
 
 export type BotMode = 'idle' | 'quoting' | 'human'
 
@@ -59,14 +61,32 @@ export function isQuoteExpired(state: WhatsAppBotState, now = Date.now()): boole
     || now - started >= QUOTE_MAX_DURATION_MS
 }
 
+/**
+ * La bienvenida precede a la primera autorización de COTIZAR.
+ * Después de cinco minutos sin interacción en modo idle vuelve a mostrarse
+ * el menú antes de aceptar una cotización nueva. En atención humana
+ * permanece el silencio, salvo que el cliente escriba un comando explícito.
+ */
 export function decideBotAction(text: string, state: WhatsAppBotState | null, now = Date.now()): BotDecision {
   const command = botCommand(text)
+  // Los controles explícitos siguen disponibles incluso tras una expiración.
   if (command === 'SALIR') return 'exit'
   if (command === 'ASESOR') return 'human'
   if (command === 'MENU') return 'menu'
-  if (command === 'COTIZAR') return 'start_quote'
-  if (state?.mode === 'quoting') {
-    return isQuoteExpired(state, now) ? 'expire_silent' : 'quote_message'
+
+  // Un mensaje a una cotización ya caducada NO puede reactivar la IA.
+  if (state?.mode === 'quoting' && isQuoteExpired(state, now)) return 'expire_silent'
+
+  // Primero presenta opciones: nunca iniciar IA ante el primer mensaje,
+  // aunque ese primer mensaje sea literalmente COTIZAR.
+  if (!state?.greeted_at) return 'welcome'
+
+  if (state.mode === 'idle') {
+    const last = state.last_activity_at ? Date.parse(state.last_activity_at) : NaN
+    if (!Number.isFinite(last) || now - last >= MENU_IDLE_RESET_MS) return 'welcome'
   }
-  return !state?.greeted_at ? 'welcome' : 'silent'
+
+  if (command === 'COTIZAR') return 'start_quote'
+  if (state.mode === 'quoting') return 'quote_message'
+  return 'silent'
 }

@@ -31,7 +31,7 @@ import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
-import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode } from '@/lib/whatsapp/botStateStore'
+import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode, touchIdleActivity } from '@/lib/whatsapp/botStateStore'
 import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 export const dynamic = 'force-dynamic'
@@ -255,11 +255,14 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
     // No se envían mensajes espontáneos. Al siguiente mensaje del cliente,
     // se informa una sola vez que la autorización ya caducó.
     await deactivateBot(phone, bot, 'idle')
-    await sendWhatsAppText(to, 'Tu sesión de cotización se cerró por inactividad (5 min) o por alcanzar los 15 min máximos. Para comenzar otra, escribe *COTIZAR*. Si prefieres atención humana, escribe *ASESOR*.')
+    await sendWhatsAppText(to, `Tu sesión de cotización caducó por 5 minutos sin actividad o por el límite absoluto de 15 minutos. No continuaré la cotización anterior.\n\n${WHATSAPP_WELCOME}`)
     return
   }
 
-  if (decision === 'silent') return // Atención humana: silencio total, no llama OpenAI.
+  if (decision === 'silent') {
+    if (bot.mode === 'idle') await touchIdleActivity(phone)
+    return // Atención humana: silencio total, no llama OpenAI.
+  }
 
   // Solo se llega aquí con una sesión iniciada explícitamente por COTIZAR.
   if (!bot.quote_session_id) {

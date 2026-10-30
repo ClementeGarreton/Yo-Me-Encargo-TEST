@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase'
-import type { BotMode, WhatsAppBotState } from '@/lib/whatsapp/botRouter'
+import { MENU_IDLE_RESET_MS, type BotMode, type WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
 /**
  * Enrutador sin migraciones. Utiliza ai_conversations y quote_sessions,
@@ -123,18 +123,36 @@ export async function moveIncomingToConversation(messageId: string, conversation
   if (error) throw new Error(`No se pudo enlazar el mensaje de WhatsApp: ${error.message}`)
 }
 
-/** La primera bienvenida se reclama antes de enviarla, sin llamada a OpenAI. */
+/** Reclama la bienvenida de forma atómica, tanto para nuevos contactos como
+ * para una interacción inactiva. Actualiza el reloj para evitar repetirla. */
 export async function claimFirstWelcome(phone: string): Promise<string | null> {
   const router = await ensureRouter(phone)
   const now = new Date().toISOString()
-  const { data, error } = await supabaseAdmin
-    .from('ai_conversations')
-    .update({ model: ROUTER_READY, updated_at: now })
+  const query = supabaseAdmin.from('ai_conversations')
+    .update({ model: ROUTER_READY, last_message_at: now, updated_at: now })
     .eq('id', router.id)
-    .eq('model', ROUTER_PENDING)
-    .select('id')
-  if (error) throw new Error(error.message)
-  return data?.length ? now : null
+  let result
+  if (router.model === ROUTER_PENDING) {
+    result = await query.eq('model', ROUTER_PENDING).select('id')
+  } else if (router.model === ROUTER_READY && router.status === 'closed'
+    && Date.now() - Date.parse(router.last_message_at) >= MENU_IDLE_RESET_MS) {
+    result = await query.eq('model', ROUTER_READY).eq('status', 'closed')
+      .eq('last_message_at', router.last_message_at).select('id')
+  } else {
+    return null
+  }
+  if (result.error) throw new Error(result.error.message)
+  return result.data?.length ? now : null
+}
+
+/** Registra silencio pasivo para no repetir el menú en cada mensaje. */
+export async function touchIdleActivity(phone: string): Promise<void> {
+  const router = await ensureRouter(phone)
+  if (router.model !== ROUTER_READY || router.status !== 'closed') return
+  const { error } = await supabaseAdmin.from('ai_conversations')
+    .update({ last_message_at: new Date().toISOString() })
+    .eq('id', router.id).eq('model', ROUTER_READY).eq('status', 'closed')
+  if (error) throw new Error(`No se pudo registrar actividad pasiva: ${error.message}`)
 }
 
 export async function releaseFailedWelcome(phone: string, claimAt: string): Promise<void> {
