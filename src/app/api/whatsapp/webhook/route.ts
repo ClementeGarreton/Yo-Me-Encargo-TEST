@@ -30,7 +30,7 @@ import {
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
-import { WHATSAPP_WELCOME, decideBotAction } from '@/lib/whatsapp/botRouter'
+import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
 import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode } from '@/lib/whatsapp/botStateStore'
 import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
 
@@ -252,8 +252,10 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
   }
 
   if (decision === 'expire_silent') {
-    // Caducidad evaluada incluso aunque el usuario nunca escribiera SALIR.
+    // No se envían mensajes espontáneos. Al siguiente mensaje del cliente,
+    // se informa una sola vez que la autorización ya caducó.
     await deactivateBot(phone, bot, 'idle')
+    await sendWhatsAppText(to, 'Tu sesión de cotización se cerró por inactividad (5 min) o por alcanzar los 15 min máximos. Para comenzar otra, escribe *COTIZAR*. Si prefieres atención humana, escribe *ASESOR*.')
     return
   }
 
@@ -274,6 +276,7 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
   if (error) throw new Error(error.message)
   if (!data || !['collecting', 'ready'].includes(data.status)) {
     await setBotMode(phone, 'idle')
+    await sendWhatsAppText(to, 'La cotización anterior ya no está activa. Escribe *COTIZAR* para iniciar otra o *ASESOR* para atención humana.')
     return
   }
   let session = data as QuoteSessionRow
@@ -282,6 +285,13 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
   const conversation = await findOrCreateWhatsAppConversation(phone, session.id, message.profileName)
   const conversationId = conversation.id as string
   await moveIncomingToConversation(message.id, conversationId)
+
+  // Notas de voz y otros adjuntos no son texto parseable. Evita llamar
+  // a OpenAI con un texto vacío y perder la respuesta silenciosamente.
+  if (message.type !== 'text' && message.type !== 'interactive' && message.type !== 'image') {
+    await sendAndLog(conversationId, to, 'Por ahora necesito que respondas por escrito. También puedes enviar fotografías en la etapa de inventario, o escribir *ASESOR* para atención humana.')
+    return
+  }
 
   // Conserva la referencia a una cotización originada en la web, sin activación implícita.
   const embeddedQuoteId = extractQuoteIdFromText(message.text)
@@ -396,6 +406,29 @@ export async function GET(request: NextRequest) {
   return new NextResponse('Forbidden', { status: 403 })
 }
 
+/**
+ * Cuando falla el parser, antes el webhook devolvía 200 a Meta y dejaba
+ * al cliente sin respuesta. Avisar solamente durante una cotización
+ * autorizada o al intentar activarla explícitamente con COTIZAR.
+ * No envía mensajes a otros contactos ni abre sesiones por su cuenta.
+ */
+async function notifyMessageProcessingError(message: ReturnType<typeof extractMessages>[number]) {
+  const explicitActivation = botCommand(message.text) === 'COTIZAR'
+  let activeAuthorizedQuote = false
+  try {
+    const bot = await ensureBotState(normalizePhone(message.from))
+    activeAuthorizedQuote = bot.mode === 'quoting' && !isQuoteExpired(bot)
+  } catch (error) {
+    console.error('[WhatsApp webhook] No se pudo comprobar el estado tras el error:', error)
+  }
+  if (!explicitActivation && !activeAuthorizedQuote) return
+  try {
+    await sendWhatsAppText(message.from, 'No pude procesar tu último mensaje. Por favor, vuelve a enviarlo en texto. Si vuelve a ocurrir, escribe *ASESOR* para atención humana o *SALIR* para terminar.')
+  } catch (error) {
+    console.error('[WhatsApp webhook] No se pudo enviar aviso de error:', error)
+  }
+}
+
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
   if (!verifyWebhookSignature(rawBody, request.headers.get('x-hub-signature-256'))) {
@@ -415,6 +448,7 @@ export async function POST(request: NextRequest) {
       await processIncoming(message)
     } catch (error) {
       console.error('[WhatsApp webhook] Error procesando mensaje:', error)
+      await notifyMessageProcessingError(message)
     }
   }
 

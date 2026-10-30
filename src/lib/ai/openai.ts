@@ -101,6 +101,11 @@ async function requestStructuredResponse<T>({
     throw new Error(message)
   }
 
+  // Con esquemas estrictos, una respuesta truncada puede llegar como HTTP 200.
+  // Detectarla antes del JSON.parse permite identificar el fallo en Vercel.
+  if (payload?.status === 'incomplete') {
+    throw new Error(`OpenAI devolvió una respuesta incompleta: ${payload?.incomplete_details?.reason || 'motivo desconocido'}`)
+  }
   const text = extractOutputText(payload)
   if (!text) throw new Error('El modelo no devolvió contenido estructurado')
 

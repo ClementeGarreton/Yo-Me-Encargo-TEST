@@ -136,7 +136,7 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
     schemaName: 'whatsapp_quote_patch',
     schema: patchSchema,
     reasoningEffort: 'none',
-    maxOutputTokens: 650,
+    maxOutputTokens: 1600,
   })
 
   const next: QuoteSessionState = JSON.parse(JSON.stringify(state))
