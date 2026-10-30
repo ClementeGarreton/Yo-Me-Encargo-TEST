@@ -2,7 +2,7 @@ import { supabaseAdmin } from '@/lib/supabase'
 import { createStructuredResponseWithUsage, type AiUsage } from '@/lib/ai/openai'
 import { buildInventoryAssistantPrompt } from '@/lib/ai/prompts'
 import { sectionQuestion, type QuoteSessionState, type PropertyType } from '@/lib/quoteSession'
-import { completeOneStoryHouse } from '@/lib/whatsapp/propertyFlow'
+import { applyFocusedPropertyFallback, completeOneStoryHouse, pendingPropertyPlace } from '@/lib/whatsapp/propertyFlow'
 
 const nullableString = { type: ['string', 'null'] }
 const nullableBoolean = { type: ['boolean', 'null'] }
@@ -120,7 +120,8 @@ Reglas:
 - Casa de un piso ("un piso", "una planta") => floor=1 y hasElevator=false. No supongas que un departamento no tiene ascensor.
 - Si el cliente afirma que el camión puede estacionarse en la puerta, parkingDistance=0; "a 20 metros" = 20. No infieras la distancia de solo mencionar una entrada.
 - Conserva lo que ya se sabía del estado: devuelve null para campos que el cliente no está modificando, no inventes datos faltantes.
-- parkingDistance debe ser 0, 20, 40 o 60 cuando pueda aproximarse a las opciones del formulario; si no está claro, null.
+- parkingDistance es una cantidad numérica exacta de metros. Si el cliente dice "a unos 10 metros" devuelve 10, NO redondees a las opciones del formulario web. Si no está claro, null.
+- Si estás preguntando por el ascensor y el cliente responde "Sí, a 10 metros", registra hasElevator=true Y parkingDistance=10 para el lugar consultado. Si responde sólo la distancia, extrae ésta y deja pendiente únicamente el ascensor.
 - Servicios: desarme=disassembly, armado=assembly, embalaje=packing, desembalaje=unpacking. Si responde "ninguno", marca los cuatro false y servicesAnswered=true.
 - servicesAnswered=true sólo cuando el mensaje responde efectivamente la sección de servicios, aunque sea "ninguno".
 - explicitConfirmation=true sólo si confirma inequívocamente generar/finalizar la cotización (por ejemplo "confirmar", "sí, generar").
@@ -168,14 +169,26 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
   assignIf(next.destination.address, 'region', data.destinationRegion)
   assignIf(next.destination.address, 'additionalInfo', data.destinationAdditionalInfo)
 
-  assignIf(next.origin.details, 'propertyType', data.originPropertyType)
-  assignIf(next.origin.details, 'floor', data.originFloor)
-  assignIf(next.origin.details, 'hasElevator', data.originHasElevator)
-  assignIf(next.origin.details, 'parkingDistance', data.originParkingDistance)
-  assignIf(next.destination.details, 'propertyType', data.destinationPropertyType)
-  assignIf(next.destination.details, 'floor', data.destinationFloor)
-  assignIf(next.destination.details, 'hasElevator', data.destinationHasElevator)
-  assignIf(next.destination.details, 'parkingDistance', data.destinationParkingDistance)
+  // En la etapa 4, solamente se escribe el lugar que se está preguntando.
+  // Esto evita atribuir al destino una contestación sobre el retiro.
+  const propertyFocus = section === 4 ? pendingPropertyPlace(state.origin.details, state.destination.details) : null
+  if (section !== 4 || propertyFocus === 'origin') {
+    assignIf(next.origin.details, 'propertyType', data.originPropertyType)
+    assignIf(next.origin.details, 'floor', data.originFloor)
+    assignIf(next.origin.details, 'hasElevator', data.originHasElevator)
+    assignIf(next.origin.details, 'parkingDistance', data.originParkingDistance)
+  }
+  if (section !== 4 || propertyFocus === 'destination') {
+    assignIf(next.destination.details, 'propertyType', data.destinationPropertyType)
+    assignIf(next.destination.details, 'floor', data.destinationFloor)
+    assignIf(next.destination.details, 'hasElevator', data.destinationHasElevator)
+    assignIf(next.destination.details, 'parkingDistance', data.destinationParkingDistance)
+  }
+  // Recupera los datos explícitos omitidos o redondeados por el modelo,
+  // usando el lugar que estaba pendiente ANTES de actualizar el estado.
+  if (section === 4) {
+    applyFocusedPropertyFallback(state.origin.details, state.destination.details, next.origin.details, next.destination.details, text)
+  }
   completeOneStoryHouse(next.origin.details)
   completeOneStoryHouse(next.destination.details)
 
