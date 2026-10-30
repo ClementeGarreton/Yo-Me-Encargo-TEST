@@ -255,7 +255,21 @@ async function processIncoming(message: ReturnType<typeof extractMessages>[numbe
     // No se envían mensajes espontáneos. Al siguiente mensaje del cliente,
     // se informa una sola vez que la autorización ya caducó.
     await deactivateBot(phone, bot, 'idle')
-    await sendWhatsAppText(to, `Tu sesión de cotización caducó por 5 minutos sin actividad o por el límite absoluto de 15 minutos. No continuaré la cotización anterior.\n\n${WHATSAPP_WELCOME}`)
+    await sendWhatsAppText(to, `¡Hola de nuevo! 😊💚
+
+Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró automáticamente, pero ¡no te preocupes! Estamos encantados de ayudarte nuevamente.
+
+¿Qué te gustaría hacer?
+
+📝 *COTIZAR* — Comenzar una nueva cotización.
+
+🤝 *ASESOR* — Hablar directamente con nuestro equipo.
+
+📋 *MENU* — Consultar nuestras opciones.
+
+👋 *SALIR* — Finalizar la atención automática.
+
+¡Estamos aquí para ayudarte! 🚚✨`)
     return
   }
 
