@@ -1,7 +1,8 @@
 import { supabaseAdmin } from '@/lib/supabase'
 import { createStructuredResponseWithUsage, type AiUsage } from '@/lib/ai/openai'
 import { buildInventoryAssistantPrompt } from '@/lib/ai/prompts'
-import type { QuoteSessionState, PropertyType } from '@/lib/quoteSession'
+import { sectionQuestion, type QuoteSessionState, type PropertyType } from '@/lib/quoteSession'
+import { completeOneStoryHouse } from '@/lib/whatsapp/propertyFlow'
 
 const nullableString = { type: ['string', 'null'] }
 const nullableBoolean = { type: ['boolean', 'null'] }
@@ -106,6 +107,8 @@ Eres el parser estructurado del cotizador de Yo Me Encargo en WhatsApp.
 Tu tarea es EXTRAER datos del último mensaje del cliente y devolverlos en el schema. No inventes información.
 
 Estamos en la sección ${section}/7. Fecha actual de referencia: ${new Date().toISOString()}.
+${section === 4 ? `Pregunta específica que se le hizo al cliente:
+${sectionQuestion(4, state)}` : ''}
 El cliente está en Chile. Interpreta fechas relativas como "mañana" o "el viernes" en contexto chileno y devuelve YYYY-MM-DD. Hora en HH:mm de 24 horas.
 
 Reglas:
@@ -113,6 +116,10 @@ Reglas:
 - Para direcciones separa calle, número y comuna. region debe usar uno de los códigos admitidos por el formulario (metropolitana, valparaiso, biobio, etc.). Puedes inferir la región cuando la comuna o ciudad la haga inequívoca; por ejemplo Providencia/Las Condes/Ñuñoa/Santiago => metropolitana. Si no puedes determinarla con confianza, null.
 - propertyType sólo puede ser casa, departamento, oficina, bodega u otro.
 - "sin ascensor", "por escalera" => hasElevator=false. "con ascensor" => true.
+- EN SECCIÓN 4 LA PREGUNTA SE FORMULA DE A UN LUGAR POR VEZ: "retiro (origen)" o "entrega (destino)". Si la respuesta no nombra lugar, atribuye los datos SOLO al lugar preguntado. Nunca copies respuestas de un lugar al otro.
+- Casa de un piso ("un piso", "una planta") => floor=1 y hasElevator=false. No supongas que un departamento no tiene ascensor.
+- Si el cliente afirma que el camión puede estacionarse en la puerta, parkingDistance=0; "a 20 metros" = 20. No infieras la distancia de solo mencionar una entrada.
+- Conserva lo que ya se sabía del estado: devuelve null para campos que el cliente no está modificando, no inventes datos faltantes.
 - parkingDistance debe ser 0, 20, 40 o 60 cuando pueda aproximarse a las opciones del formulario; si no está claro, null.
 - Servicios: desarme=disassembly, armado=assembly, embalaje=packing, desembalaje=unpacking. Si responde "ninguno", marca los cuatro false y servicesAnswered=true.
 - servicesAnswered=true sólo cuando el mensaje responde efectivamente la sección de servicios, aunque sea "ninguno".
@@ -169,6 +176,8 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
   assignIf(next.destination.details, 'floor', data.destinationFloor)
   assignIf(next.destination.details, 'hasElevator', data.destinationHasElevator)
   assignIf(next.destination.details, 'parkingDistance', data.destinationParkingDistance)
+  completeOneStoryHouse(next.origin.details)
+  completeOneStoryHouse(next.destination.details)
 
   assignIf(next.additionalServices, 'disassembly', data.disassembly)
   assignIf(next.additionalServices, 'assembly', data.assembly)

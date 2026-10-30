@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { supabaseAdmin } from '@/lib/supabase'
+import { nextPropertyQuestion } from '@/lib/whatsapp/propertyFlow'
 
 export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otro'
 
@@ -145,7 +146,7 @@ export function sectionQuestion(section: number, state: QuoteSessionState): stri
     case 3:
       return '3/7 · Direcciones\nIndícame la dirección completa de origen y destino: calle, número, comuna y región de cada una.'
     case 4:
-      return '4/7 · Detalles de las propiedades\nPara origen y destino dime: casa/departamento/oficina/bodega, piso, si hay ascensor y aproximadamente qué tan lejos puede estacionar el camión de la puerta.'
+      return nextPropertyQuestion(state.origin.details, state.destination.details)
     case 5:
       return '5/7 · Inventario\nCuéntame todo lo que necesitas mover y las cantidades. También puedes enviarme fotos; reconoceré los objetos y te pediré confirmar sólo lo ambiguo.'
     case 6:
