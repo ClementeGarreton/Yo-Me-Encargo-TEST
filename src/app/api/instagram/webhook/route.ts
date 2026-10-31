@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyWebhookSignature } from '@/lib/whatsapp/cloudApi'
 import { messageContext } from '@/lib/whatsapp/messageTransport'
 import { processIncoming, notifyMessageProcessingError } from '@/lib/whatsapp/incomingProcessor'
-import { extractInstagramMessages } from '@/lib/instagram/webhookPayload'
+import { inspectInstagramWebhook } from '@/lib/instagram/webhookPayload'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -36,11 +36,17 @@ export async function POST(request: NextRequest) {
   try { payload = JSON.parse(rawBody) }
   catch { return new NextResponse('Invalid JSON', { status: 400 }) }
 
-  const messages = extractInstagramMessages(payload, accountId)
+  const { messages, diagnostic } = inspectInstagramWebhook(payload, accountId)
+  // 200 indica recepción HTTP, no que se haya procesado un DM. Registrar ambas cosas.
+  console.info('[Instagram][webhook]', JSON.stringify(diagnostic))
+  if (messages.length === 0 && diagnostic.messagingEvents > 0) {
+    console.warn('[Instagram][descartado] Eventos recibidos, ningún DM procesable:', JSON.stringify(diagnostic.ignored))
+  }
   for (const message of messages) {
+    console.info('[Instagram][entrante]', JSON.stringify({ type: message.type, hasText: Boolean(message.text.trim()) }))
     try {
       await messageContext.run({ platform: 'instagram', accountId: message.accountId }, async () => {
-        try { await processIncoming(message) }
+        try { await processIncoming(message); console.info('[Instagram][motor] Procesamiento finalizado') }
         catch (error) {
           console.error('[Instagram] Error procesando DM:', error)
           // La misma política de WhatsApp: solo avisar si la cotización

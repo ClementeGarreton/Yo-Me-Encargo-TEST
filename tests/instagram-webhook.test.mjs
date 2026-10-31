@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { splitInstagramText } from '../src/lib/instagram/splitText.ts'
-import { extractInstagramMessages } from '../src/lib/instagram/webhookPayload.ts'
+import { extractInstagramMessages, inspectInstagramWebhook } from '../src/lib/instagram/webhookPayload.ts'
 
 const account = '17841447706872387'
 const event = (message, overrides = {}) => ({ sender: { id: '123456' }, recipient: { id: account }, message, ...overrides })
@@ -49,7 +49,7 @@ test('contrato: firma, handshake y motor común conservados', () => {
   assert.match(route, /INSTAGRAM_VERIFY_TOKEN/)
   assert.match(route, /hub\.challenge/)
   assert.match(route, /verifyWebhookSignature\(rawBody,/)
-  assert.match(route, /extractInstagramMessages/)
+  assert.match(route, /inspectInstagramWebhook/)
   assert.match(route, /processIncoming/)
   assert.match(route, /messageContext\.run/)
 })
@@ -60,4 +60,36 @@ test('inventarios extensos se dividen en mensajes de Instagram completos', () =>
   assert.ok(chunks.length > 1)
   assert.ok(chunks.every((chunk) => chunk.length <= 900))
   assert.equal(chunks.join('\n'), input)
+})
+
+test('diagnostica los eventos descartados sin registrar texto ni identificadores', () => {
+  const result = inspectInstagramWebhook(payload(event({ mid: 'm_012', text: 'Hola' }, { recipient: { id: 'otro' } })), account)
+  assert.equal(result.messages.length, 0)
+  assert.equal(result.diagnostic.messagingEvents, 1)
+  assert.equal(result.diagnostic.ignored.accountMismatch, 1)
+  assert.equal(JSON.stringify(result.diagnostic).includes('Hola'), false)
+  assert.equal(JSON.stringify(result.diagnostic).includes('123456'), false)
+})
+
+test('admite entry.id alternativo siempre que el destinatario exacto sea la cuenta autorizada', () => {
+  const result = inspectInstagramWebhook({object: 'instagram', entry: [
+    {id: 'identificador_alternativo', messaging: [event({mid: 'm_013', text: 'Hola'})]},
+  ]}, account)
+  assert.equal(result.messages.length, 1)
+  assert.equal(result.diagnostic.matchingEntry, false)
+  assert.equal(result.diagnostic.matchingRecipient, true)
+})
+
+test('el mensaje de otra cuenta se rechaza aunque coincida entry.id', () => {
+  const result = inspectInstagramWebhook(payload(event({mid: 'm_014', text: 'Hola'}, {recipient: {id: 'otra_cuenta'}})), account)
+  assert.equal(result.messages.length, 0)
+})
+
+test('registra decisiones y resultados de envío solo para el canal Instagram', () => {
+  const processor = readFileSync(new URL('../src/lib/whatsapp/incomingProcessor.ts', import.meta.url), 'utf8')
+  const transport = readFileSync(new URL('../src/lib/whatsapp/messageTransport.ts', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../src/app/api/instagram/webhook/route.ts', import.meta.url), 'utf8')
+  assert.match(processor, /\[Instagram\]\[motor\]/)
+  assert.match(transport, /\[Instagram\]\[envio\]/)
+  assert.match(route, /\[Instagram\]\[webhook\]/)
 })

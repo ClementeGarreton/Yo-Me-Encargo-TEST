@@ -1,4 +1,4 @@
-import { conversationKey, customerPhone,
+import { messageContext, conversationKey, customerPhone,
   downloadChannelImage as downloadWhatsAppMediaAsDataUrl,
   sendChannelDocument as sendWhatsAppDocument,
   sendChannelText as sendWhatsAppText,
@@ -257,7 +257,10 @@ async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' 
 
 export async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
   // Interruptor de emergencia de Vercel. Nunca llama a OpenAI con el bot apagado.
-  if (process.env.WHATSAPP_BOT_ENABLED === 'false') return
+  if (process.env.WHATSAPP_BOT_ENABLED === 'false') {
+    if (messageContext.getStore()?.platform === 'instagram') console.warn('[Instagram][motor] Bloqueado por WHATSAPP_BOT_ENABLED=false')
+    return
+  }
   const to = message.from
   const phone = normalizePhone(to)
   if (!(await claimIncomingMessage({
@@ -265,10 +268,16 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     messageId: message.id,
     content: message.text || (message.type === 'image' ? '[Imagen]' : `[${message.type}]`),
     messageType: message.type === 'image' ? 'image' : message.type === 'interactive' ? 'interactive' : 'text',
-  }))) return
+  }))) {
+    if (messageContext.getStore()?.platform === 'instagram') console.info('[Instagram][motor] Mensaje duplicado; no se responde')
+    return
+  }
 
   const bot = await ensureBotState(phone)
   const decision = decideBotAction(message.text, bot)
+  if (messageContext.getStore()?.platform === 'instagram') {
+    console.info('[Instagram][motor]', JSON.stringify({ decision, mode: bot.mode, greeted: Boolean(bot.greeted_at) }))
+  }
 
   if (decision === 'welcome') {
     // No se crea quote_session ni se usa OpenAI por un saludo o texto cualquiera.

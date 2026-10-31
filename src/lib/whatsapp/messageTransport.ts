@@ -29,8 +29,12 @@ async function instagramSend(to: string, message: Record<string, unknown>) {
     headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ recipient: { id: to }, message }),
   })
-  const response = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(response?.error?.message || `Instagram Send API ${res.status}`)
+  const response: any = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    console.error('[Instagram][envio] Error Graph API', JSON.stringify({ status: res.status, code: response?.error?.code, subcode: response?.error?.error_subcode }))
+    throw new Error(response?.error?.message || `Instagram Send API ${res.status}`)
+  }
+  console.info('[Instagram][envio] Respuesta aceptada por Graph API', JSON.stringify({ status: res.status }))
   return { messages: [{ id: response.message_id || null }] }
 }
 
