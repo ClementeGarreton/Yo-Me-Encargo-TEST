@@ -9,6 +9,7 @@ import {
   createWhatsAppSession,
   closeQuoteSession,
   getNextSection,
+  mutateQuoteSessionAtomically,
   saveQuoteSession,
   sectionQuestion,
   type QuoteSessionRow,
@@ -28,7 +29,8 @@ import {
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
-import { isInventoryAddition } from '@/lib/whatsapp/inventoryResolution'
+import { canCloseInventory, isInventoryAddition, upsertInventoryPhoto } from '@/lib/whatsapp/inventoryResolution'
+import { answerExtras } from '@/lib/whatsapp/extrasFlow'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
@@ -107,6 +109,43 @@ async function sendAndLog(conversationId: string, to: string, text: string) {
   })
 }
 
+/** Muestra los artículos que realmente se utilizarán para calcular el PDF. */
+async function inventoryReviewQuestion(state: QuoteSessionRow['state']): Promise<string> {
+  const ids = state.items.map((item) => item.catalogItemId)
+  const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').in('id', ids)
+  if (error) throw new Error(error.message)
+  const names = new Map((data || []).map((row) => [String(row.id), String(row.name)]))
+  const list = state.items.map((item) => `• ${item.quantity} × ${names.get(item.catalogItemId) || 'Artículo no identificado'}`).join('\n')
+  const photos = state.inventoryPhotos || []
+  return `7/7 · *Revisa tu inventario antes de cotizar*\n\n${list}\n\n` +
+    `${photos.length ? `Fotos procesadas: ${photos.filter((photo) => photo.status === 'done').length}/${photos.length}.\n` : ''}` +
+    `¿Están todos tus muebles y no sobra ninguno?\n\n` +
+    `*CONFIRMAR* — generar precio y PDF.\n` +
+    `*QUITAR* + nombre — eliminar un objeto.\n` +
+    `*AGREGAR* + descripción — incorporar uno que falta.\n` +
+    `También puedes enviar una fotografía adicional.`
+}
+
+async function nextQuestion(state: QuoteSessionRow['state']): Promise<string> {
+  const section = getNextSection(state)
+  return section === 7 ? inventoryReviewQuestion(state) : sectionQuestion(section, state)
+}
+
+/** Permite retirar objetos falsamente detectados antes de emitir una oferta. */
+async function removeCatalogItem(sessionId: string, text: string): Promise<QuoteSessionRow | null> {
+  const requested = text.replace(/^quitar\s+/i, '').trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  if (!requested) return null
+  const { data, error } = await supabaseAdmin.from('catalog_items').select('id,name').ilike('name', `%${requested}%`)
+  if (error) throw new Error(error.message)
+  const matched = (data || []).map((item) => String(item.id))
+  if (!matched.length) return null
+  return mutateQuoteSessionAtomically(sessionId, (state) => {
+    const present = state.items.filter((item) => matched.includes(item.catalogItemId))
+    if (present.length !== 1) return state
+    return { ...state, items: state.items.filter((item) => item.catalogItemId !== present[0].catalogItemId) }
+  })
+}
+
 async function handleHumanHandoff(session: QuoteSessionRow, conversationId: string, to: string) {
   await saveQuoteSession(session.id, session.state, { status: 'handoff' })
   await setBotMode(normalizePhone(to), 'human')
@@ -120,6 +159,16 @@ async function handleHumanHandoff(session: QuoteSessionRow, conversationId: stri
 }
 
 async function finalizeQuote(session: QuoteSessionRow, conversationId: string, to: string) {
+  // Cargar la versión final: las fotos pudieron haberse procesado en paralelo.
+  const { data: fresh, error: freshError } = await supabaseAdmin
+    .from('quote_sessions').select('*').eq('id', session.id).maybeSingle()
+  if (freshError || !fresh) throw new Error(freshError?.message || 'Sesión no encontrada')
+  session = fresh as QuoteSessionRow
+  if (getNextSection(session.state) !== 7 || !canCloseInventory(session.state)
+    || (session.state.inventoryPhotos?.length && !session.state.inventoryCollectionDone)) {
+    await sendAndLog(conversationId, to, 'Todavía no tengo un inventario validado. Revisemos primero los muebles para evitar una cotización incorrecta.')
+    return
+  }
   await sendAndLog(conversationId, to, 'Perfecto. Estoy generando tu cotización y el PDF con el detalle. Dame unos segundos…')
   const quote = await generateQuoteFromSession(session)
   // La cotización ya existe; cerrar autorización de OpenAI ANTES de enviar el PDF.
@@ -331,45 +380,126 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
   let state = session.state
   let section = getNextSection(state)
 
+  if (section === 5 && CONFIRM_QUOTE.test(message.text)) {
+    await sendAndLog(conversationId, to, 'Aún estamos reuniendo el inventario. Cuando termines de enviar tus muebles, escribe *LISTO*. Te mostraré la lista completa antes de generar el precio.')
+    return
+  }
+
+  // La lista queda abierta mientras el cliente envía fotografías. Enviar LISTO
+  // una sola vez evita que una foto posterior se pierda o adelante los extras.
+  if (section === 5 && /^(listo|termine|termin[eé]|eso es todo|nada mas|nada m[aá]s)[.!\s]*$/i.test(message.text)) {
+    session = await mutateQuoteSessionAtomically(session.id, (current) => ({
+      ...current, inventoryCollectionDone: canCloseInventory(current),
+    }))
+    const finished = session.state.inventoryCollectionDone
+    await sendAndLog(conversationId, to, finished
+      ? await nextQuestion(session.state)
+      : 'Todavía hay fotos sin identificar o falta un mueble. Escribe qué aparece en la foto pendiente para completar el inventario.')
+    return
+  }
+
   if (section === 5 && state.pendingInventory.length > 0 && message.text) {
     const resolved = resolvePendingInventoryChoice(state, message.text)
     if (resolved) {
-      state = resolved
-      session = await saveQuoteSession(session.id, state)
+      session = await mutateQuoteSessionAtomically(session.id, (current) => resolvePendingInventoryChoice(current, message.text) || current)
+      state = session.state
       await logAction({ conversationId, action: 'inventory_ambiguity_resolved', payload: { answer: message.text } })
-      const nextPending = pendingInventoryQuestion(state)
-      await sendAndLog(conversationId, to, nextPending || sectionQuestion(getNextSection(state), state))
+      await sendAndLog(conversationId, to, pendingInventoryQuestion(state) || await nextQuestion(state))
       return
     }
   }
 
-  const addingLateInventory = section === 6 && isInventoryAddition(message.text)
+  const addingLateInventory = (section === 6 || section === 7) && isInventoryAddition(message.text)
   if (message.type === 'image' || section === 5 || addingLateInventory) {
+    const isPhoto = message.type === 'image'
+    if (isPhoto) {
+      // Registrar el mensaje ANTES de usar OpenAI para que la cotización no
+      // se finalice mientras hay fotos en vuelo en otras funciones de Vercel.
+      session = await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+        messageId: message.id, status: 'processing', recognized: [],
+      }))
+    }
     let imageDataUrl: string | null = null
-    if (message.type === 'image' && message.imageId) {
+    if (isPhoto && message.imageId) {
       imageDataUrl = await downloadWhatsAppMediaAsDataUrl(message.imageId)
     }
-    const inventory = await parseWhatsAppInventory(message.text, imageDataUrl)
-    await addUsage(conversationId, inventory.usage)
-    state = mergeInventory(state, inventory.statePatch)
-    session = await saveQuoteSession(session.id, state)
-    await logAction({
-      conversationId,
-      action: 'inventory_parsed',
-      payload: { summary: inventory.summary, items: inventory.statePatch.items, pending: inventory.statePatch.pendingInventory },
-    })
-
-    const pendingQuestion = pendingInventoryQuestion(state)
-    if (pendingQuestion) {
-      await sendAndLog(conversationId, to, pendingQuestion)
-    } else if (section === 6 && message.type === 'image') {
-      // No repetir toda la pregunta 6/7 con cada foto que agregue el cliente.
-      await sendAndLog(conversationId, to, 'Foto recibida, actualicé tu inventario 👍')
-    } else if (addingLateInventory) {
-      await sendAndLog(conversationId, to, 'Agregado 👍 Cuando termines, dime si necesitas embalaje, desarme o armado; si no, escribe *NINGUNO*.')
-    } else {
-      await sendAndLog(conversationId, to, `Registré los objetos con tamaños aproximados, que podrás revisar antes de confirmar.\n\n${sectionQuestion(getNextSection(state), state)}`)
+    if (isPhoto && !imageDataUrl) {
+      await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+        messageId: message.id, status: 'needs_description', recognized: [],
+      }))
+      await sendAndLog(conversationId, to, 'No pude abrir esa fotografía. Dime qué mueble aparece o vuelve a enviarla, por favor.')
+      return
     }
+    let inventory: Awaited<ReturnType<typeof parseWhatsAppInventory>>
+    try {
+      inventory = await parseWhatsAppInventory(message.text, imageDataUrl)
+    } catch (error) {
+      if (!isPhoto) throw error
+      await mutateQuoteSessionAtomically(session.id, (current) => upsertInventoryPhoto(current, {
+        messageId: message.id, status: 'needs_description', recognized: [],
+      }))
+      console.error('[WhatsApp webhook] Error al analizar una foto:', error)
+      await sendAndLog(conversationId, to, 'No pude analizar esa fotografía. ¿Qué mueble aparece? Lo registraré por texto.')
+      return
+    }
+    await addUsage(conversationId, inventory.usage)
+    session = await mutateQuoteSessionAtomically(session.id, (current) => {
+      let merged = mergeInventory(current, inventory.statePatch)
+      if (isPhoto) {
+        merged = upsertInventoryPhoto(merged, {
+          messageId: message.id, status: inventory.needsReview ? 'needs_description' : 'done',
+          recognized: inventory.recognizedNames,
+        })
+      } else if (inventory.statePatch.items.length > 0 && merged.inventoryPhotos?.some((photo) => photo.status === 'needs_description')) {
+        // El cliente describió el mueble de una foto poco clara.
+        const unresolved = merged.inventoryPhotos.find((photo) => photo.status === 'needs_description')!
+        merged = upsertInventoryPhoto(merged, { ...unresolved, status: 'done', recognized: inventory.recognizedNames })
+        // Esta explicación resolvió la foto que había quedado pendiente.
+        merged.pendingInventory = []
+      }
+      return merged
+    })
+    state = session.state
+    await logAction({
+      conversationId, action: 'inventory_parsed',
+      payload: { messageId: message.id, summary: inventory.summary, items: inventory.statePatch.items,
+        pending: inventory.statePatch.pendingInventory, photos: state.inventoryPhotos?.length },
+    })
+    if (isPhoto) {
+      const count = state.inventoryPhotos?.length || 1
+      const names = inventory.recognizedNames.join(', ')
+      await sendAndLog(conversationId, to, inventory.needsReview
+        ? `Foto ${count} recibida, pero no pude identificar con certeza el mueble. ¿Qué aparece en esa foto?`
+        : `✓ Foto ${count}: ${names || 'registrada'}. Envíame las demás y al terminar escribe *LISTO*.`)
+    } else if (state.pendingInventory.length) {
+      await sendAndLog(conversationId, to, pendingInventoryQuestion(state) || '¿Qué mueble aparece en la foto pendiente?')
+    } else if (state.inventoryPhotos?.length && !state.inventoryCollectionDone) {
+      await sendAndLog(conversationId, to, 'Gracias, registrado. Si ya enviaste todas las fotos, escribe *LISTO* para revisar el inventario.')
+    } else {
+      await sendAndLog(conversationId, to, await nextQuestion(state))
+    }
+    return
+  }
+
+  if (section === 7 && /^quitar\s+/i.test(message.text)) {
+    const updated = await removeCatalogItem(session.id, message.text)
+    await sendAndLog(conversationId, to, updated
+      ? await nextQuestion(updated.state)
+      : 'No encontré ese artículo. Usa el nombre tal como aparece en la lista de inventario.')
+    return
+  }
+
+  // Servicios adicionales: una decisión binaria por mensaje. No llamar a OpenAI
+  // para interpretar un «sí/no» ni aplicar ese sí a varios servicios.
+  if (section === 6) {
+    const nextServices = answerExtras(state.additionalServices, message.text)
+    if (!nextServices) {
+      await sendAndLog(conversationId, to, `Para esta pregunta basta con responder *SÍ* o *NO*. 😊\n\n${sectionQuestion(6, state)}`)
+      return
+    }
+    state = { ...state, additionalServices: nextServices }
+    session = await saveQuoteSession(session.id, state)
+    await sendAndLog(conversationId, to, await nextQuestion(state))
     return
   }
 
@@ -417,9 +547,7 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
     return
   }
 
-  await sendAndLog(conversationId, to, section === 6
-    ? '¿Necesitas embalaje, desarme o armado? Puedes indicar otro detalle o responder *NINGUNO*.'
-    : sectionQuestion(section, state))
+  await sendAndLog(conversationId, to, await nextQuestion(state))
 }
 
 export async function GET(request: NextRequest) {

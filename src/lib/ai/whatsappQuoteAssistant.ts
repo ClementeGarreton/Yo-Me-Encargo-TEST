@@ -193,12 +193,14 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
   completeOneStoryHouse(next.origin.details)
   completeOneStoryHouse(next.destination.details)
 
-  assignIf(next.additionalServices, 'disassembly', data.disassembly)
-  assignIf(next.additionalServices, 'assembly', data.assembly)
-  assignIf(next.additionalServices, 'packing', data.packing)
-  assignIf(next.additionalServices, 'unpacking', data.unpacking)
-  if (data.servicesAnswered) {
-    next.additionalServices.observations = data.observations || ''
+  // El flujo WhatsApp de extras es determinista. Un parser de otra sección
+  // no puede seleccionar extras ni cerrar anticipadamente la sección 6.
+  if (section === 6) {
+    assignIf(next.additionalServices, 'disassembly', data.disassembly)
+    assignIf(next.additionalServices, 'assembly', data.assembly)
+    assignIf(next.additionalServices, 'packing', data.packing)
+    assignIf(next.additionalServices, 'unpacking', data.unpacking)
+    if (data.servicesAnswered) next.additionalServices.observations = data.observations || ''
   } else if (data.observations !== null && next.additionalServices.observations !== '__pending__') {
     next.additionalServices.observations = data.observations
   }
@@ -286,6 +288,8 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
   statePatch: Pick<QuoteSessionState, 'items' | 'pendingInventory'>
   summary: string
   usage: AiUsage
+  recognizedNames: string[]
+  needsReview: boolean
 }> {
   const { data: rows, error } = await supabaseAdmin
     .from('catalog_items')
@@ -305,7 +309,7 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
 
   const content: any[] = []
   if (text.trim()) content.push({ type: 'input_text', text: text.trim() })
-  if (imageDataUrl) content.push({ type: 'input_image', image_url: imageDataUrl, detail: 'low' })
+  if (imageDataUrl) content.push({ type: 'input_image', image_url: imageDataUrl, detail: 'high' })
 
   const { data, usage } = await createStructuredResponseWithUsage<InventoryAiResult>({
     instructions: buildInventoryAssistantPrompt(catalog, { lowFriction: true }),
@@ -316,8 +320,19 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
     maxOutputTokens: 900,
   })
 
-  const validItems = data.items.filter((item) => byId.has(item.catalogItemId))
+  const validItems = data.items.filter((item) => {
+    const catalogItem = byId.get(item.catalogItemId)
+    if (!catalogItem) return false
+    if (imageDataUrl && item.confidence < 0.65) return false
+    // Una alfombra que aparece debajo del sofá no significa que se traslade.
+    if (imageDataUrl && !/\b(alfombra|tapete|moqueta)\b/i.test(text)
+      && /\b(alfombra|tapete|moqueta)\b/i.test(catalogItem.name)) return false
+    return true
+  })
   const pendingInventory: QuoteSessionState['pendingInventory'] = []
+  const excludedLowConfidence = imageDataUrl
+    ? data.items.some((item) => byId.has(item.catalogItemId) && item.confidence < 0.65)
+    : false
   const approximateItems: Array<{ catalogItemId: string; quantity: number }> = []
 
   for (const pending of data.pendingResolutions) {
@@ -329,7 +344,7 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
         confidence: suggestion.confidence,
       }))
     const approximation = chooseClosestInventoryCandidate(pending.sourceLabel, candidates)
-    if (approximation) {
+    if (approximation && (!imageDataUrl || (approximation.confidence || 0) >= 0.65)) {
       // Una variante equivalente permite cotizar de forma aproximada, sin interrogar.
       approximateItems.push({ catalogItemId: approximation.catalogItemId, quantity: pending.quantity })
     } else {
@@ -352,6 +367,8 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
       pendingInventory,
     },
     summary: `${combined.size} tipos de objeto registrados con equivalencias aproximadas del catálogo.`,
+    recognizedNames: [...combined.keys()].map((id) => byId.get(id)!.name),
+    needsReview: Boolean(imageDataUrl && (excludedLowConfidence || pendingInventory.length > 0 || combined.size === 0)),
     usage,
   }
 }

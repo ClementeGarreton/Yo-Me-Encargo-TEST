@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { supabaseAdmin } from '@/lib/supabase'
 import { nextPropertyQuestion } from '@/lib/whatsapp/propertyFlow'
+import { extrasQuestion, type ExtrasStep } from '@/lib/whatsapp/extrasFlow'
 
 export type PropertyType = 'casa' | 'departamento' | 'oficina' | 'bodega' | 'otro'
 
@@ -49,6 +50,14 @@ export interface QuoteSessionState {
     }
   }
   items: Array<{ catalogItemId: string; quantity: number }>
+  /** Seguimiento por foto, dentro del state JSONB existente. No requiere migraciones. */
+  inventoryPhotos?: Array<{
+    messageId: string
+    status: 'processing' | 'done' | 'needs_description'
+    recognized: string[]
+  }>
+  /** El cliente debe indicar LISTO para cerrar una tanda de fotografías. */
+  inventoryCollectionDone?: boolean
   pendingInventory: Array<{
     sourceLabel: string
     quantity: number
@@ -62,6 +71,7 @@ export interface QuoteSessionState {
     unpacking: boolean
     observations: string
     photos: string[]
+    extrasStep?: ExtrasStep
   }
   confirmed: boolean
 }
@@ -106,6 +116,8 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       details: { propertyType: null, floor: null, hasElevator: null, parkingDistance: null },
     },
     items: [],
+    inventoryPhotos: [],
+    inventoryCollectionDone: false,
     pendingInventory: [],
     additionalServices: {
       disassembly: false,
@@ -114,6 +126,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       unpacking: false,
       observations: '',
       photos: [],
+      extrasStep: 'packing',
     },
     confirmed: false,
   }
@@ -133,6 +146,8 @@ export function getNextSection(state: QuoteSessionState): number {
   if (!od.propertyType || od.floor === null || od.hasElevator === null || od.parkingDistance === null || !dd.propertyType || dd.floor === null || dd.hasElevator === null || dd.parkingDistance === null) return 4
 
   if (state.items.length === 0 || state.pendingInventory.length > 0) return 5
+  if (state.inventoryPhotos?.some((photo) => photo.status !== 'done')) return 5
+  if (state.inventoryPhotos?.length && !state.inventoryCollectionDone) return 5
   if (state.additionalServices.observations === '__pending__') return 6
   return 7
 }
@@ -150,7 +165,7 @@ export function sectionQuestion(section: number, state: QuoteSessionState): stri
     case 5:
       return '5/7 · Inventario\n¿Qué muebles y cajas necesitas trasladar? Indícame las cantidades. Usaré tamaños aproximados y podrás corregirlos después.'
     case 6:
-      return '6/7 · Extras\n¿Necesitas embalaje, desarme o armado? Si no, responde *NINGUNO*.'
+      return extrasQuestion(state.additionalServices)
     case 7:
       return `7/7 · Resumen\nYa tengo los datos necesarios. Responde *CONFIRMAR* para generar tu cotización automática en PDF, o dime qué dato quieres corregir.`
     default:
@@ -224,6 +239,41 @@ export async function saveQuoteSession(
 
   if (error || !data) throw new Error(error?.message || 'No se pudo actualizar la sesión')
   return data as QuoteSessionRow
+}
+
+/**
+ * Actualización compare-and-swap del JSONB de la sesión.
+ * Evita que varias fotos enviadas simultáneamente se sobreescriban entre sí
+ * en distintas funciones serverless. Usa la misma tabla/state: cero migraciones.
+ */
+export async function mutateQuoteSessionAtomically(
+  id: string,
+  mutate: (state: QuoteSessionState) => QuoteSessionState,
+): Promise<QuoteSessionRow> {
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    const { data: existing, error: readError } = await supabaseAdmin
+      .from('quote_sessions').select('*').eq('id', id).maybeSingle()
+    if (readError) throw new Error(readError.message)
+    if (!existing || !['collecting', 'ready'].includes(existing.status)) {
+      throw new Error('Cotización cerrada; no se puede modificar el inventario')
+    }
+    const current = existing as QuoteSessionRow
+    const nextState = mutate(structuredClone(current.state))
+    const currentSection = getNextSection(nextState)
+    // El timestamp avanza al menos 1 ms, incluso en operaciones ultrarrápidas.
+    const now = new Date(Math.max(Date.now(), Date.parse(current.updated_at) + 1)).toISOString()
+    const { data, error } = await supabaseAdmin.from('quote_sessions')
+      .update({ state: nextState, current_section: currentSection,
+        status: currentSection === 7 ? 'ready' : 'collecting', updated_at: now })
+      .eq('id', id)
+      // Comparación atómica sobre JSONB: si otro webhook lo cambió, reintentar.
+      .eq('state', JSON.stringify(current.state))
+      .in('status', ['collecting', 'ready'])
+      .select('*').maybeSingle()
+    if (error) throw new Error(`No se pudo consolidar inventario: ${error.message}`)
+    if (data) return data as QuoteSessionRow
+  }
+  throw new Error('Demasiados cambios simultáneos en el inventario. Reenvía el último elemento.')
 }
 
 export async function loadResumeSession(id: string, token: string): Promise<QuoteSessionRow | null> {

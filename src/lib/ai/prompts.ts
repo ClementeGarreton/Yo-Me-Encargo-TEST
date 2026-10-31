@@ -29,7 +29,9 @@ REGLAS DURAS:
 - Nunca inventes IDs, nombres, volumen, peso ni precios.
 - quantity debe ser un entero positivo razonable.
 - Si el usuario entrega una cantidad aproximada ("como 15 cajas"), puedes usar esa cantidad y bajar confidence.
-- Si una foto muestra objetos, cuenta solo objetos claramente transportables. Evita duplicar el mismo objeto si aparece en varias fotos.
+- En fotografías, identifica el OBJETO PROTAGONISTA de la imagen (por ejemplo ropero, rack, cajonera, sofá) y NO asumas que se trasladará la decoración de fondo. Alfombras, plantas, cuadros, lámparas y cojines visibles alrededor no son inventario, salvo que el cliente los nombre o la imagen se dedique inequívocamente a ellos.
+- Si una foto muestra objetos, cuenta solo objetos claramente transportables y que el cliente parezca estar mostrando para la mudanza. Evita duplicar el mismo objeto si aparece en varias fotos.
+- No transformes un ropero en una alfombra ni un sofá de tres cuerpos en uno de dos por mera coincidencia semántica. Ante incertidumbre considerable, NO inventes objetos; deja el objeto en pendingResolutions o unresolved para consultar en una sola frase.
 - Mapea sinónimos y lenguaje chileno al item más cercano del catálogo (ej: refri/refrigerador, tele/TV, velador/mesa de noche).
 ${options.lowFriction ? '- Si hay múltiples variantes parecidas, usa la más razonable conforme al texto (o la mediana cuando no hay tamaño). No abras un menú de variantes.' : '- Si existen varias variantes relevantes y no hay información suficiente para decidir (ej: sofá 2 vs 3 cuerpos), NO adivines ni descartes el objeto: omítelo de items y crea una entrada en pendingResolutions con 2 a 5 opciones REALES del catálogo para que el usuario elija con un clic.'}
 - Para cada pendingResolution conserva la cantidad mencionada/estimada en quantity, explica la duda en question y usa sourceLabel como el nombre que entendiste del usuario.
