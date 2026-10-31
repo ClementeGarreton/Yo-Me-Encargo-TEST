@@ -24,6 +24,7 @@ interface Detail {
   messages: Array<{ id: string; role: string; direction: string; content: string; message_type: string; created_at: string }>
   actions: Array<{ id: string; action: string; structured_payload: any; success: boolean; error: string | null; created_at: string }>
   quoteSession: any
+  photos?: Array<{ messageId: string; recognized: string[]; url: string | null }>
 }
 
 export default function AiConversations() {
@@ -34,6 +35,7 @@ export default function AiConversations() {
   const [status, setStatus] = useState('all')
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
+  const [summary, setSummary] = useState<{ active: number; handoff: number; quoted: number; closed: number; error: number; instagram: number } | null>(null)
   const [waStatus, setWaStatus] = useState<{ configured: boolean; graphVersion: string } | null>(null)
 
   const load = async () => {
@@ -46,6 +48,7 @@ export default function AiConversations() {
       const res = await fetch(`/api/admin/ai-conversations?${params}`)
       const data = await res.json()
       if (res.ok) setRows(data)
+      fetch('/api/admin/ai-conversations/summary').then(r => r.ok ? r.json() : null).then(setSummary).catch(() => null)
     } finally {
       setLoading(false)
     }
@@ -84,11 +87,12 @@ export default function AiConversations() {
       )}
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Card className="p-5"><p className="text-xs uppercase text-gray-500">Conversaciones</p><p className="mt-1 text-3xl font-black">{rows.length}</p></Card>
-        <Card className="p-5"><p className="text-xs uppercase text-gray-500">Con cotización</p><p className="mt-1 text-3xl font-black text-green-700">{totals.converted}</p></Card>
+        <Card className="p-5"><p className="text-xs uppercase text-gray-500">Conversaciones activas</p><p className="mt-1 text-3xl font-black">{summary?.active ?? '—'}</p></Card>
+        <Card className="p-5"><p className="text-xs uppercase text-gray-500">Con cotización</p><p className="mt-1 text-3xl font-black text-green-700">{summary?.quoted ?? totals.converted}</p></Card>
         <Card className="p-5"><p className="text-xs uppercase text-gray-500">Costo IA visible</p><p className="mt-1 text-3xl font-black">US${totals.cost.toFixed(4)}</p></Card>
       </div>
 
+      {summary && <p className="text-sm text-gray-600">Pendientes de asesor: <b>{summary.handoff}</b> · Cerradas: <b>{summary.closed}</b> · Errores: <b>{summary.error}</b> · Conversaciones de Instagram: <b>{summary.instagram}</b></p>}
       <Card className="p-4">
         <div className="flex flex-wrap gap-3">
           <div className="relative min-w-[220px] flex-1">
@@ -96,7 +100,7 @@ export default function AiConversations() {
             <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} placeholder="Nombre, teléfono o cotización" className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm" />
           </div>
           <select value={channel} onChange={(e) => setChannel(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
-            <option value="all">Todos los canales</option><option value="whatsapp">WhatsApp</option><option value="web">Web</option>
+            <option value="all">Todos los canales</option><option value="whatsapp">WhatsApp</option><option value="instagram">Instagram</option><option value="web">Web</option>
           </select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
             <option value="all">Todos los estados</option><option value="active">Activa</option><option value="quoted">Cotizó</option><option value="handoff">Ejecutivo</option><option value="closed">Cerrada</option><option value="error">Error</option>
@@ -112,7 +116,7 @@ export default function AiConversations() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate font-bold text-gray-900">{row.customer_name || row.external_user_id || 'Visitante web'}</p>
-                  <p className="mt-0.5 text-xs text-gray-500">{row.channel === 'whatsapp' ? 'WhatsApp' : 'Web'} · {row.status}</p>
+                  <p className="mt-0.5 text-xs text-gray-500">{row.external_user_id?.startsWith('ig:') ? 'Instagram' : row.channel === 'whatsapp' ? 'WhatsApp' : 'Web'} · {row.status}</p>
                 </div>
                 {row.converted && <span className="rounded-full bg-green-100 px-2 py-1 text-[10px] font-bold text-green-800">COTIZÓ</span>}
               </div>
@@ -127,12 +131,23 @@ export default function AiConversations() {
           ) : (
             <div className="space-y-5">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
-                <div><h3 className="text-xl font-black">{detail.conversation.customer_name || detail.conversation.external_user_id || 'Visitante'}</h3><p className="text-sm text-gray-500">{detail.conversation.channel} · {detail.conversation.model || 'modelo sin registrar'}</p></div>
+                <div><h3 className="text-xl font-black">{detail.conversation.customer_name || detail.conversation.external_user_id || 'Visitante'}</h3><p className="text-sm text-gray-500">{detail.conversation.external_user_id?.startsWith('ig:') ? 'Instagram' : detail.conversation.channel} · {detail.conversation.model || 'modelo sin registrar'}</p></div>
                 <div className="text-right text-xs text-gray-500"><p>{detail.conversation.input_tokens} in / {detail.conversation.output_tokens} out</p><p className="font-bold text-gray-800">US${Number(detail.conversation.estimated_ai_cost_usd || 0).toFixed(5)}</p></div>
               </div>
 
               {detail.quoteSession && <div className="rounded-xl border border-green-200 bg-green-50 p-3 text-sm"><p className="font-bold text-green-900">Sesión de cotización</p><p className="mt-1 text-green-800">Sección {detail.quoteSession.current_section}/7 · {detail.quoteSession.status}{detail.quoteSession.estimated_price ? ` · $${Number(detail.quoteSession.estimated_price).toLocaleString('es-CL')}` : ''}</p></div>}
 
+              {Boolean(detail.photos?.length) && (
+                <div className="rounded-xl border border-gray-200 p-3">
+                  <h4 className="mb-3 font-bold">Fotografías originales ({detail.photos?.length})</h4>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                    {detail.photos?.map((photo) => <div key={photo.messageId} className="text-xs">
+                      {photo.url ? <a href={photo.url} target="_blank" rel="noopener noreferrer"><img src={photo.url} alt={photo.recognized.join(', ') || 'Inventario'} className="h-28 w-full rounded-lg object-cover" /></a> : <span>Fotografía no disponible</span>}
+                      <p className="mt-1 text-gray-500">{photo.recognized.join(', ') || 'Por identificar'}</p>
+                    </div>)}
+                  </div>
+                </div>
+              )}
               <div className="space-y-3">
                 {detail.messages.map((message) => (
                   <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>

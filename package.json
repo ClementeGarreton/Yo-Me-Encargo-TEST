@@ -9,7 +9,8 @@
     "lint": "next lint",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\"",
     "verify-seo": "node scripts/verify-seo.js",
-    "test:whatsapp-bot": "node --experimental-strip-types --test tests/whatsapp-*.test.mjs"
+    "test:whatsapp-bot": "node --experimental-strip-types --test tests/whatsapp-*.test.mjs",
+    "test:instagram-webhook": "node --experimental-strip-types --test tests/instagram-webhook.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",

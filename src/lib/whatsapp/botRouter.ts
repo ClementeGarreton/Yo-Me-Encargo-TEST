@@ -33,10 +33,9 @@ export type BotDecision =
 export const WHATSAPP_WELCOME = [
   '¡Bienvenido a *Yo Me Encargo*! 👋',
   '',
-  'Elige una opción escribiendo una de estas palabras:',
+  '¿Cómo podemos ayudarte? Escribe una de estas palabras:',
   '*COTIZAR* — Iniciar una cotización automática.',
   '*ASESOR* — Hablar con una persona (sin IA).',
-  '*MENU* — Volver a ver estas opciones.',
   '*SALIR* — Finalizar la atención automática.',
 ].join('\n')
 

@@ -18,6 +18,7 @@ const patchSchema = {
   properties: {
     name: nullableString,
     email: nullableString,
+    phone: nullableString,
     isCompany: nullableBoolean,
     companyName: nullableString,
     companyRut: nullableString,
@@ -53,7 +54,7 @@ const patchSchema = {
     normalizedSummary: { type: 'string' },
   },
   required: [
-    'name', 'email', 'isCompany', 'companyName', 'companyRut', 'date', 'time', 'isFlexible',
+    'name', 'email', 'phone', 'isCompany', 'companyName', 'companyRut', 'date', 'time', 'isFlexible',
     'originStreet', 'originNumber', 'originCommune', 'originRegion', 'originAdditionalInfo',
     'destinationStreet', 'destinationNumber', 'destinationCommune', 'destinationRegion', 'destinationAdditionalInfo',
     'originPropertyType', 'originFloor', 'originHasElevator', 'originParkingDistance',
@@ -67,6 +68,7 @@ const patchSchema = {
 type GeneralPatch = {
   name: string | null
   email: string | null
+  phone: string | null
   isCompany: boolean | null
   companyName: string | null
   companyRut: string | null
@@ -113,6 +115,7 @@ ${sectionQuestion(4, state)}` : ''}
 El cliente está en Chile. Interpreta fechas relativas como "mañana" o "el viernes" en contexto chileno y devuelve YYYY-MM-DD. Hora en HH:mm de 24 horas.
 
 Reglas:
+- Si el cliente indica teléfono de contacto, extrae sólo números y prefijo, sin inventar.
 - Si un dato no aparece claramente en el mensaje actual, devuelve null. No repitas datos del estado sólo por existir.
 - Para direcciones separa calle, número y comuna. region debe usar uno de los códigos admitidos por el formulario (metropolitana, valparaiso, biobio, etc.). Puedes inferir la región cuando la comuna o ciudad la haga inequívoca; por ejemplo Providencia/Las Condes/Ñuñoa/Santiago => metropolitana. Si no puedes determinarla con confianza, null.
 - propertyType sólo puede ser casa, departamento, oficina, bodega u otro.
@@ -151,6 +154,7 @@ export async function parseGeneralWhatsAppTurn(section: number, state: QuoteSess
   const next: QuoteSessionState = JSON.parse(JSON.stringify(state))
   assignIf(next.personalInfo, 'name', data.name)
   assignIf(next.personalInfo, 'email', data.email)
+  assignIf(next.personalInfo, 'phone', data.phone)
   assignIf(next.personalInfo, 'isCompany', data.isCompany)
   assignIf(next.personalInfo, 'companyName', data.companyName)
   assignIf(next.personalInfo, 'companyRut', data.companyRut)

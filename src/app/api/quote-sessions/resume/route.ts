@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { loadResumeSession } from '@/lib/quoteSession'
 import { supabaseAdmin } from '@/lib/supabase'
+import { signedQuotePhoto } from '@/lib/whatsapp/photoStorage'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,6 +42,12 @@ export async function GET(request: NextRequest) {
   const combineDateTime = state.schedule.date && state.schedule.time
     ? `${state.schedule.date}T${state.schedule.time}:00`
     : null
+
+  const uploadedPhotos = await Promise.all((state.inventoryPhotos || []).filter((p) => p.storagePath).map((p) => signedQuotePhoto(p.storagePath!, 3600)))
+  // URL permanente del bucket existente para que Flow/booking no guarden enlaces firmados caducados.
+  const photoUrls = Array.isArray(state.additionalServices.photos) && state.additionalServices.photos.length
+    ? state.additionalServices.photos
+    : uploadedPhotos.filter((url): url is string => Boolean(url))
 
   return NextResponse.json({
     currentSection: session.current_section,
@@ -91,6 +98,7 @@ export async function GET(request: NextRequest) {
       additionalServices: {
         ...state.additionalServices,
         observations: state.additionalServices.observations === '__pending__' ? '' : state.additionalServices.observations,
+        photos: photoUrls,
       },
       totalVolume: Number(session.total_volume || 0),
       totalWeight: Number(session.total_weight || 0),

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import { signedQuotePhoto } from '@/lib/whatsapp/photoStorage'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,5 +21,10 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       : Promise.resolve({ data: null } as any),
   ])
 
-  return NextResponse.json({ conversation, messages: messages || [], actions: actions || [], quoteSession: sessionResult.data || null })
+  const photoEntries = sessionResult.data?.state?.inventoryPhotos || []
+  const photos = await Promise.all(photoEntries.map(async (photo: any) => ({
+    messageId: photo.messageId, recognized: photo.recognized || [],
+    url: photo.storagePath ? await signedQuotePhoto(photo.storagePath, 3600) : null,
+  })))
+  return NextResponse.json({ conversation, messages: messages || [], actions: actions || [], quoteSession: sessionResult.data || null, photos })
 }

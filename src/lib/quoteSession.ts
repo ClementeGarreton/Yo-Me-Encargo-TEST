@@ -49,12 +49,14 @@ export interface QuoteSessionState {
       parkingDistance: number | null
     }
   }
+  taxDocument?: 'boleta' | 'factura' | null
   items: Array<{ catalogItemId: string; quantity: number }>
   /** Seguimiento por foto, dentro del state JSONB existente. No requiere migraciones. */
   inventoryPhotos?: Array<{
     messageId: string
     status: 'processing' | 'done' | 'needs_description'
     recognized: string[]
+    storagePath?: string
   }>
   /** El cliente debe indicar LISTO para cerrar una tanda de fotografías. */
   inventoryCollectionDone?: boolean
@@ -115,6 +117,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
       address: { street: null, number: null, commune: null, region: null, additionalInfo: null },
       details: { propertyType: null, floor: null, hasElevator: null, parkingDistance: null },
     },
+    taxDocument: null,
     items: [],
     inventoryPhotos: [],
     inventoryCollectionDone: false,
@@ -133,7 +136,7 @@ export function createEmptyQuoteState(phone: string): QuoteSessionState {
 }
 
 export function getNextSection(state: QuoteSessionState): number {
-  if (!state.personalInfo.name || !state.personalInfo.email) return 1
+  if (!state.personalInfo.name || !state.personalInfo.email || !state.personalInfo.phone || !state.taxDocument) return 1
   if (state.personalInfo.isCompany && (!state.personalInfo.companyName || !state.personalInfo.companyRut)) return 1
   if (!state.schedule.date || !state.schedule.time) return 2
 
@@ -155,7 +158,9 @@ export function getNextSection(state: QuoteSessionState): number {
 export function sectionQuestion(section: number, state: QuoteSessionState): string {
   switch (section) {
     case 1:
-      return '1/7 · Tus datos\n¿Cuál es tu nombre completo y correo electrónico? Tu teléfono ya lo tenemos por WhatsApp. Si cotizas como empresa, dime también razón social y RUT.'
+      if (!state.personalInfo.name || !state.personalInfo.email || !state.personalInfo.phone) return `1/7 · Tus datos\n¿Cuál es tu nombre completo y correo electrónico?${state.personalInfo.phone ? ' Tu teléfono ya lo tenemos por WhatsApp.' : ' Indica también tu teléfono de contacto.'}`
+      if (!state.taxDocument) return '1/7 · Documento tributario\n¿Necesitas *BOLETA* o *FACTURA*? (No cambia el precio por sí solo).'
+      return '1/7 · Datos de facturación\nPara emitir factura, ¿cuál es la razón social y el RUT de la empresa?'
     case 2:
       return '2/7 · Fecha y hora\n¿Qué día y a qué hora quieres realizar la mudanza? Si tienes flexibilidad de fecha, dímelo también.'
     case 3:
@@ -173,8 +178,8 @@ export function sectionQuestion(section: number, state: QuoteSessionState): stri
   }
 }
 
-export async function createWhatsAppSession(phone: string): Promise<QuoteSessionRow> {
-  const state = createEmptyQuoteState(phone)
+export async function createWhatsAppSession(phone: string, contactPhone?: string): Promise<QuoteSessionRow> {
+  const state = createEmptyQuoteState(contactPhone === undefined ? phone : contactPhone)
   state.additionalServices.observations = '__pending__'
   const resumeToken = crypto.randomBytes(24).toString('hex')
   const { data, error } = await supabaseAdmin

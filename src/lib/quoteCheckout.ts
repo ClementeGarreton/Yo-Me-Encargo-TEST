@@ -222,7 +222,7 @@ export async function createQuoteFlowOrder(params: {
   subject: string
 }): Promise<FlowPaymentResponse> {
   const { quoteId, paymentType, amount, email, subject } = params
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+  const appUrl = (process.env.WHATSAPP_QUOTE_BASE_URL || 'https://yo-me-encargo-test97.vercel.app').replace(/\/$/, '')
 
   return flowService.createPayment({
     commerceOrder: `${quoteId}-${paymentType}-${Date.now()}`,

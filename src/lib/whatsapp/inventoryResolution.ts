@@ -61,6 +61,7 @@ export type InventoryPhotoRecord = {
   messageId: string
   status: 'processing' | 'done' | 'needs_description'
   recognized: string[]
+  storagePath?: string
 }
 
 export function upsertInventoryPhoto<T extends { inventoryPhotos?: InventoryPhotoRecord[]; inventoryCollectionDone?: boolean }>(

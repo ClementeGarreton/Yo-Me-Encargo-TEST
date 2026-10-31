@@ -3,6 +3,7 @@ import jsPDF from 'jspdf'
 import { supabaseAdmin } from '@/lib/supabase'
 import { MAPS_CONFIG } from '@/config/maps'
 import type { QuoteSessionRow, QuoteSessionState } from '@/lib/quoteSession'
+import { loadQuotePhoto } from '@/lib/whatsapp/photoStorage'
 
 interface ServerPricingConfig {
   basePrice: number
@@ -175,7 +176,7 @@ async function calculate(state: QuoteSessionState) {
   price += fragileCount * pricing.specialPackaging.fragile
 
   if (state.schedule.isFlexible) price -= (price * pricing.discounts.flexibility) / 100
-  if (state.personalInfo.isCompany) price *= 1.19
+  // Boleta y factura no añaden por sí mismas un 19%: configuración de precios existente manda.
 
   return {
     estimatedPrice: Math.round(price),
@@ -187,7 +188,7 @@ async function calculate(state: QuoteSessionState) {
   }
 }
 
-function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnType<typeof calculate>>, quoteId: string) {
+function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnType<typeof calculate>>, quoteId: string, photos: string[] = []) {
   const pdf = new jsPDF('p', 'mm', 'a4')
   const width = pdf.internal.pageSize.getWidth()
   let y = 18
@@ -213,7 +214,8 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.setFontSize(10)
   pdf.text(`Nombre: ${state.personalInfo.name || ''}`, 18, y); y += 6
   pdf.text(`Email: ${state.personalInfo.email || ''}`, 18, y); y += 6
-  pdf.text(`Telefono: ${state.personalInfo.phone}`, 18, y); y += 9
+  pdf.text(`Telefono/contacto: ${state.personalInfo.phone}`, 18, y); y += 6
+  pdf.text(`Documento solicitado: ${state.taxDocument || 'Por definir'}`, 18, y); y += 9
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(14)
@@ -223,7 +225,9 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.text(`Fecha: ${state.schedule.date || ''} · ${state.schedule.time || ''}`, 18, y); y += 6
   pdf.text(`Origen: ${addressText(state.origin.address)}`, 18, y, { maxWidth: 175 }); y += 8
   pdf.text(`Destino: ${addressText(state.destination.address)}`, 18, y, { maxWidth: 175 }); y += 8
-  pdf.text(`Distancia estimada: ${quote.totalDistance} km`, 18, y); y += 9
+  pdf.text(`Distancia estimada del trayecto: ${quote.totalDistance} km`, 18, y); y += 6
+  pdf.text(`Acarreo en retiro: ${state.origin.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 6
+  pdf.text(`Acarreo en entrega: ${state.destination.details.parkingDistance ?? 'Sin dato'} m del camión a la puerta`, 18, y); y += 9
 
   pdf.setFont('helvetica', 'bold')
   pdf.setFontSize(14)
@@ -255,6 +259,35 @@ function generateQuotePdfBuffer(state: QuoteSessionState, quote: Awaited<ReturnT
   pdf.text('Valor estimativo sujeto a validacion de volumen, accesos, disponibilidad y condiciones reales del servicio.', 18, 282, { maxWidth: 175 })
   pdf.text('Afina los detalles de tu mudanza con nuestro ejecutivo en WhatsApp: +56 9 5439 0267', 18, 288, { maxWidth: 175 })
 
+  if (photos.length) {
+    pdf.addPage()
+    pdf.setTextColor(20, 20, 20)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(15)
+    pdf.text('Registro fotográfico del inventario', 18, 18)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(9)
+    pdf.text('Fotografías originales aportadas por el cliente (referenciales).', 18, 25)
+    let photoY = 34
+    let photoColumn = 0
+    for (let i = 0; i < photos.length; i++) {
+      if (i > 0 && i % 6 === 0) {
+        pdf.addPage()
+        photoY = 26
+      }
+      photoColumn = i % 2
+      if (i % 2 === 0 && i % 6 !== 0) photoY += 76
+      const x = 18 + photoColumn * 92
+      try {
+        pdf.addImage(photos[i], photos[i].startsWith('data:image/png') ? 'PNG' : photos[i].startsWith('data:image/webp') ? 'WEBP' : 'JPEG', x, photoY, 80, 62, undefined, 'FAST')
+        pdf.setFontSize(9)
+        pdf.text(`Fotografía ${i + 1}`, x, photoY + 67)
+      } catch (error) {
+        console.warn('[Cotización PDF] No se pudo incluir una imagen:', error)
+        pdf.text(`Fotografía ${i + 1}: archivo conservado en el expediente`, x, photoY + 10, { maxWidth: 80 })
+      }
+    }
+  }
   return Buffer.from(pdf.output('arraybuffer'))
 }
 
@@ -291,7 +324,7 @@ async function upsertProspect(state: QuoteSessionState, quoteId: string, quote: 
       total_weight: quote.totalWeight,
       total_distance: quote.totalDistance,
       items_summary: quote.items.map((item) => ({ name: item.name, quantity: item.quantity, volume: item.volume })),
-      additional_services: state.additionalServices,
+      additional_services: { ...state.additionalServices, taxDocument: state.taxDocument || null },
       lead_key: leadKey,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'lead_key', ignoreDuplicates: false })
@@ -324,7 +357,9 @@ export async function generateQuoteFromSession(session: QuoteSessionRow): Promis
   const quote = await calculate(state)
   const quoteId = session.quote_id || `YME-WA-${Date.now().toString(36).toUpperCase()}`
   const prospectId = await upsertProspect(state, quoteId, quote)
-  const buffer = generateQuotePdfBuffer(state, quote, quoteId)
+  const photoPaths = (state.inventoryPhotos || []).filter((photo) => photo.storagePath).map((photo) => photo.storagePath!)
+  const photoData = (await Promise.all(photoPaths.slice(0, 12).map(loadQuotePhoto))).filter((value): value is string => Boolean(value))
+  const buffer = generateQuotePdfBuffer(state, quote, quoteId, photoData)
   const { pdfUrl, fileName } = await uploadPdf(buffer, prospectId, quoteId)
 
   await supabaseAdmin

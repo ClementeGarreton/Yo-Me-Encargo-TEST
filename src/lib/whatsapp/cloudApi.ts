@@ -49,8 +49,9 @@ export function verifyWebhookSignature(rawBody: string, signature: string | null
   }
 }
 
-export async function sendWhatsAppText(to: string, body: string) {
-  const { phoneNumberId } = config()
+export async function sendWhatsAppText(to: string, body: string, sendingPhoneId?: string) {
+  const { phoneNumberId: primaryId } = config()
+  const phoneNumberId = sendingPhoneId || primaryId
   return graphFetch(`/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -64,8 +65,9 @@ export async function sendWhatsAppText(to: string, body: string) {
   })
 }
 
-export async function sendWhatsAppDocument(to: string, documentUrl: string, filename: string, caption?: string) {
-  const { phoneNumberId } = config()
+export async function sendWhatsAppDocument(to: string, documentUrl: string, filename: string, caption?: string, sendingPhoneId?: string) {
+  const { phoneNumberId: primaryId } = config()
+  const phoneNumberId = sendingPhoneId || primaryId
   return graphFetch(`/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
