@@ -79,9 +79,18 @@ export function applyFocusedPropertyFallback(
 function propertyPrompt(details: PropertyDetails, place: 'origen' | 'destino'): string | null {
   const isOrigin = place === 'origen'
   const label = isOrigin ? 'retiro (origen)' : 'entrega (destino)'
-  const title = `4/7 · Datos del lugar de ${label}`
   const needsType = !details.propertyType
   const needsFloor = details.floor === null
+  const needsElevator = details.hasElevator === null
+  const needsParking = details.parkingDistance === null
+  // Cinco hitos informativos: tipo/piso de origen, ascensor de origen,
+  // estacionamiento de origen, tipo/piso de destino y acceso de destino.
+  // En el último hito se pregunta por ascensor y estacionamiento por separado
+  // cuando ambos son necesarios, conservando una pregunta breve por turno.
+  const substep = isOrigin
+    ? (needsType || needsFloor ? 1 : needsElevator ? 2 : 3)
+    : (needsType || needsFloor ? 4 : 5)
+  const title = `4/7 · Datos del lugar de ${label} (${substep}/5)`
 
   if (needsType && needsFloor) {
     return `${title}\n¿Es casa, departamento, oficina o bodega? ¿En qué piso están las cosas?`
@@ -89,8 +98,6 @@ function propertyPrompt(details: PropertyDetails, place: 'origen' | 'destino'): 
   if (needsType) return `${title}\n¿Es casa, departamento, oficina o bodega?`
   if (needsFloor) return `${title}\n¿En qué piso están las cosas? Si es una casa de un piso, responde “1”.`
 
-  const needsElevator = details.hasElevator === null
-  const needsParking = details.parkingDistance === null
   if (needsElevator && needsParking) {
     // Una sola pregunta por turno. Si espontáneamente responde ambos, se guardan ambos.
     return `${title}\n¿Hay ascensor para mover los muebles?`

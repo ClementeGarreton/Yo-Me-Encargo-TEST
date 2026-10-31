@@ -103,3 +103,14 @@ test('una casa de un piso completa ascensor falso sin inventar estacionamiento',
   assert.equal(afterDest.hasElevator, false)
   assert.equal(afterDest.parkingDistance, null)
 })
+
+test('numera los cinco hitos de la pregunta 4 sin alterar preguntas ni validaciones', () => {
+  const empty = blank()
+  const origin = { propertyType: 'departamento', floor: 5, hasElevator: null, parkingDistance: null }
+  assert.match(nextPropertyQuestion(empty, empty), /\(1\/5\)/)
+  assert.match(nextPropertyQuestion(origin, empty), /\(2\/5\)/)
+  assert.match(nextPropertyQuestion({ ...origin, hasElevator: true }, empty), /\(3\/5\)/)
+  assert.match(nextPropertyQuestion(ready(), empty), /\(4\/5\)/)
+  const house = { propertyType: 'casa', floor: 1, hasElevator: false, parkingDistance: null }
+  assert.match(nextPropertyQuestion(ready(), house), /\(5\/5\)/)
+})

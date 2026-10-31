@@ -163,7 +163,7 @@ export function sectionQuestion(section: number, state: QuoteSessionState): stri
     case 4:
       return nextPropertyQuestion(state.origin.details, state.destination.details)
     case 5:
-      return '5/7 · Inventario\n¿Qué muebles y cajas necesitas trasladar? Indícame las cantidades. Usaré tamaños aproximados y podrás corregirlos después.'
+      return '5/7 · Inventario\nEscribe qué muebles y cajas quieres trasladar, indicando cuántos de cada uno.\n\n📷 También puedes adjuntar fotos para que reconozcamos los objetos. Si envías fotos, escribe *LISTO* al terminar.'
     case 6:
       return extrasQuestion(state.additionalServices)
     case 7:
