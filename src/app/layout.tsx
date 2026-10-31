@@ -1,25 +1,10 @@
 import type { Metadata } from 'next'
-import { Archivo, Hanken_Grotesk } from 'next/font/google'
 import './globals.css'
 import { Toaster } from 'react-hot-toast'
 import { GoogleTagManager } from '@next/third-parties/google'
 import { MetaPixel } from '@/components/tracking/MetaPixel'
 import AttributionCapture from '@/components/tracking/AttributionCapture'
 import WhatsAppFloatingButton from '@/components/ui/WhatsAppFloatingButton'
-
-const archivo = Archivo({
-  subsets: ['latin'],
-  weight: ['600', '700', '800', '900'],
-  variable: '--font-archivo',
-  display: 'swap',
-})
-
-const hankenGrotesk = Hanken_Grotesk({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700', '800'],
-  variable: '--font-hanken',
-  display: 'swap',
-})
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://yomeencargo.cl'),
@@ -135,7 +120,7 @@ export default function RootLayout({
         {/* Meta Pixel */}
         <MetaPixel pixelId={process.env.NEXT_PUBLIC_META_PIXEL_ID || ''} />
       </head>
-      <body className={`${archivo.variable} ${hankenGrotesk.variable}`}>
+      <body>
         <AttributionCapture />
         {children}
         <Toaster position="top-right" />

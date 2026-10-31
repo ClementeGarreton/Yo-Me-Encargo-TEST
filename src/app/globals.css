@@ -4,6 +4,11 @@
 
 @layer base {
   :root {
+    /* Familias del sistema: evita descargar Google Fonts durante next build.
+       Conserva los nombres de variables utilizados por Tailwind y el CSS. */
+    --font-archivo: 'Arial Narrow', Arial, Helvetica, sans-serif;
+    --font-hanken: Arial, Helvetica, sans-serif;
+
     --background: 0 0% 100%;
     --foreground: 0 0% 0%;
 
