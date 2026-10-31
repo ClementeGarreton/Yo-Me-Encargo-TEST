@@ -20,7 +20,7 @@ export function buildInventoryAssistantPrompt(catalog: Array<{
   category: string
   volume: number
   weight: number
-}>) {
+}>, options: { lowFriction?: boolean } = {}) {
   return `
 Eres un parser semántico de inventario para un cotizador chileno de mudanzas. Tu trabajo NO es conversar libremente: transformas texto y/o fotografías en items existentes del catálogo.
 
@@ -31,7 +31,7 @@ REGLAS DURAS:
 - Si el usuario entrega una cantidad aproximada ("como 15 cajas"), puedes usar esa cantidad y bajar confidence.
 - Si una foto muestra objetos, cuenta solo objetos claramente transportables. Evita duplicar el mismo objeto si aparece en varias fotos.
 - Mapea sinónimos y lenguaje chileno al item más cercano del catálogo (ej: refri/refrigerador, tele/TV, velador/mesa de noche).
-- Si existen varias variantes relevantes y no hay información suficiente para decidir (ej: sofá 2 vs 3 cuerpos), NO adivines ni descartes el objeto: omítelo de items y crea una entrada en pendingResolutions con 2 a 5 opciones REALES del catálogo para que el usuario elija con un clic.
+${options.lowFriction ? '- Si hay múltiples variantes parecidas, usa la más razonable conforme al texto (o la mediana cuando no hay tamaño). No abras un menú de variantes.' : '- Si existen varias variantes relevantes y no hay información suficiente para decidir (ej: sofá 2 vs 3 cuerpos), NO adivines ni descartes el objeto: omítelo de items y crea una entrada en pendingResolutions con 2 a 5 opciones REALES del catálogo para que el usuario elija con un clic.'}
 - Para cada pendingResolution conserva la cantidad mencionada/estimada en quantity, explica la duda en question y usa sourceLabel como el nombre que entendiste del usuario.
 - suggestions debe contener únicamente IDs exactos del catálogo. Prioriza variantes del mismo tipo (tamaño, cuerpos, formato) antes que objetos vagamente parecidos.
 - Si no existe ninguna alternativa razonable en el catálogo, deja suggestions vacío, usa reason = "not_found" y agrega el objeto a unresolved.
@@ -41,6 +41,14 @@ REGLAS DURAS:
 - summary debe explicar brevemente qué se agregó automáticamente y cuántas cosas necesitan confirmación.
 - No calcules m³. El backend usará el volumen oficial del catálogo.
 
+${options.lowFriction ? `POLÍTICA DE WHATSAPP (PRIORIDAD):
+- Cotiza con una equivalencia razonable; no fuerces al cliente a elegir códigos y versiones comerciales.
+- Un «sofá de tres cuerpos» es el sofá de tres cuerpos del catálogo, NO un módulo alternativo por el mero hecho de compartir categoría.
+- Si el tamaño no está definido, usa una variante estándar o mediana, como estimación revisable. No preguntes por pequeño/mediano/grande.
+- Devuelve pendingResolutions sólo si NO existe ninguna equivalencia razonable, no para diferencias menores de dimensiones o estilo.
+- Nunca ofrezcas un cuestionario de variantes de productos; en WhatsApp el siguiente paso es continuar la cotización.
+- El presupuesto es estimativo y los detalles pueden ajustarse después.
+` : ''}
 CATÁLOGO AUTORIZADO:
 ${JSON.stringify(catalog)}
 `

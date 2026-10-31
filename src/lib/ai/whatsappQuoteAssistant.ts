@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase'
 import { createStructuredResponseWithUsage, type AiUsage } from '@/lib/ai/openai'
 import { buildInventoryAssistantPrompt } from '@/lib/ai/prompts'
+import { chooseClosestInventoryCandidate } from '@/lib/whatsapp/inventoryResolution'
 import { sectionQuestion, type QuoteSessionState, type PropertyType } from '@/lib/quoteSession'
 import { applyFocusedPropertyFallback, completeOneStoryHouse, pendingPropertyPlace } from '@/lib/whatsapp/propertyFlow'
 
@@ -307,7 +308,7 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
   if (imageDataUrl) content.push({ type: 'input_image', image_url: imageDataUrl, detail: 'low' })
 
   const { data, usage } = await createStructuredResponseWithUsage<InventoryAiResult>({
-    instructions: buildInventoryAssistantPrompt(catalog),
+    instructions: buildInventoryAssistantPrompt(catalog, { lowFriction: true }),
     input: [{ role: 'user', content }],
     schemaName: 'whatsapp_inventory_parser',
     schema: inventorySchema,
@@ -316,25 +317,41 @@ export async function parseWhatsAppInventory(text: string, imageDataUrl?: string
   })
 
   const validItems = data.items.filter((item) => byId.has(item.catalogItemId))
-  const pendingInventory = data.pendingResolutions.map((pending) => ({
-    sourceLabel: pending.sourceLabel,
-    quantity: pending.quantity,
-    question: pending.question,
-    suggestions: pending.suggestions
+  const pendingInventory: QuoteSessionState['pendingInventory'] = []
+  const approximateItems: Array<{ catalogItemId: string; quantity: number }> = []
+
+  for (const pending of data.pendingResolutions) {
+    const candidates = pending.suggestions
       .filter((suggestion) => byId.has(suggestion.catalogItemId))
-      .slice(0, 5)
       .map((suggestion) => ({
         catalogItemId: suggestion.catalogItemId,
         label: byId.get(suggestion.catalogItemId)!.name,
-      })),
-  }))
+        confidence: suggestion.confidence,
+      }))
+    const approximation = chooseClosestInventoryCandidate(pending.sourceLabel, candidates)
+    if (approximation) {
+      // Una variante equivalente permite cotizar de forma aproximada, sin interrogar.
+      approximateItems.push({ catalogItemId: approximation.catalogItemId, quantity: pending.quantity })
+    } else {
+      // Sin equivalencia en el catálogo no se inventa el precio: se pide solo el dato necesario.
+      pendingInventory.push({ sourceLabel: pending.sourceLabel, quantity: pending.quantity, question: `No encontré «${pending.sourceLabel}» en el catálogo. ¿Cómo es o qué medidas aproximadas tiene?`, suggestions: [] })
+    }
+  }
 
+  const combined = new Map<string, number>()
+  for (const item of validItems) {
+    combined.set(item.catalogItemId, (combined.get(item.catalogItemId) || 0) + item.quantity)
+  }
+  for (const item of approximateItems) {
+    // Si el mismo objeto también vino como coincidencia segura, no duplicarlo.
+    if (!combined.has(item.catalogItemId)) combined.set(item.catalogItemId, item.quantity)
+  }
   return {
     statePatch: {
-      items: validItems.map(({ catalogItemId, quantity }) => ({ catalogItemId, quantity })),
+      items: [...combined.entries()].map(([catalogItemId, quantity]) => ({ catalogItemId, quantity })),
       pendingInventory,
     },
-    summary: data.summary,
+    summary: `${combined.size} tipos de objeto registrados con equivalencias aproximadas del catálogo.`,
     usage,
   }
 }
@@ -374,7 +391,7 @@ export function pendingInventoryQuestion(state: QuoteSessionState): string | nul
   const pending = state.pendingInventory[0]
   if (!pending) return null
   if (pending.suggestions.length === 0) {
-    return `${pending.question}\nNo encontré una equivalencia suficientemente cercana en el catálogo. Escríbeme otro nombre o medidas aproximadas.`
+    return pending.question
   }
   const options = pending.suggestions.map((item, index) => `${index + 1}. ${item.label}`).join('\n')
   return `${pending.question}\n${options}\n\nResponde con el número de la opción que corresponde.`

@@ -148,9 +148,9 @@ export function sectionQuestion(section: number, state: QuoteSessionState): stri
     case 4:
       return nextPropertyQuestion(state.origin.details, state.destination.details)
     case 5:
-      return '5/7 · Inventario\nCuéntame todo lo que necesitas mover y las cantidades. También puedes enviarme fotos; reconoceré los objetos y te pediré confirmar sólo lo ambiguo.'
+      return '5/7 · Inventario\n¿Qué muebles y cajas necesitas trasladar? Indícame las cantidades. Usaré tamaños aproximados y podrás corregirlos después.'
     case 6:
-      return '6/7 · Servicios adicionales\n¿Necesitas desarme, armado, embalaje o desembalaje? También puedes agregar observaciones importantes. Si no necesitas extras, responde “ninguno”.'
+      return '6/7 · Extras\n¿Necesitas embalaje, desarme o armado? Si no, responde *NINGUNO*.'
     case 7:
       return `7/7 · Resumen\nYa tengo los datos necesarios. Responde *CONFIRMAR* para generar tu cotización automática en PDF, o dime qué dato quieres corregir.`
     default:

@@ -28,6 +28,7 @@ import {
   resolvePendingInventoryChoice,
 } from '@/lib/ai/whatsappQuoteAssistant'
 import { generateQuoteFromSession } from '@/lib/serverQuoteEngine'
+import { isInventoryAddition } from '@/lib/whatsapp/inventoryResolution'
 import { getAvailableSlotsForDate } from '@/lib/scheduleAvailability'
 import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
@@ -342,7 +343,8 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
     }
   }
 
-  if (message.type === 'image' || section === 5) {
+  const addingLateInventory = section === 6 && isInventoryAddition(message.text)
+  if (message.type === 'image' || section === 5 || addingLateInventory) {
     let imageDataUrl: string | null = null
     if (message.type === 'image' && message.imageId) {
       imageDataUrl = await downloadWhatsAppMediaAsDataUrl(message.imageId)
@@ -359,9 +361,14 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
 
     const pendingQuestion = pendingInventoryQuestion(state)
     if (pendingQuestion) {
-      await sendAndLog(conversationId, to, `${inventory.summary}\n\n${pendingQuestion}`)
+      await sendAndLog(conversationId, to, pendingQuestion)
+    } else if (section === 6 && message.type === 'image') {
+      // No repetir toda la pregunta 6/7 con cada foto que agregue el cliente.
+      await sendAndLog(conversationId, to, 'Foto recibida, actualicé tu inventario 👍')
+    } else if (addingLateInventory) {
+      await sendAndLog(conversationId, to, 'Agregado 👍 Cuando termines, dime si necesitas embalaje, desarme o armado; si no, escribe *NINGUNO*.')
     } else {
-      await sendAndLog(conversationId, to, `${inventory.summary}\n\n${sectionQuestion(getNextSection(state), state)}`)
+      await sendAndLog(conversationId, to, `Registré los objetos con tamaños aproximados, que podrás revisar antes de confirmar.\n\n${sectionQuestion(getNextSection(state), state)}`)
     }
     return
   }
@@ -410,7 +417,9 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
     return
   }
 
-  await sendAndLog(conversationId, to, sectionQuestion(section, state))
+  await sendAndLog(conversationId, to, section === 6
+    ? '¿Necesitas embalaje, desarme o armado? Puedes indicar otro detalle o responder *NINGUNO*.'
+    : sectionQuestion(section, state))
 }
 
 export async function GET(request: NextRequest) {
