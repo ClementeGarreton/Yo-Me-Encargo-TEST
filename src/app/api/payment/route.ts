@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Obtener URL base de la aplicación
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
 
     // Crear orden de pago en Flow
     const paymentData = {

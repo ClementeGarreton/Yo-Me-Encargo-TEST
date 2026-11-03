@@ -6,14 +6,14 @@ const webhook = read('src/lib/whatsapp/incomingProcessor.ts')
 const quote = read('src/lib/quoteSession.ts')
 const pdf = read('src/lib/serverQuoteEngine.ts')
 
-test('cotizaciones Whatsapp enlazan test97 y mantienen session + token', () => {
-  assert.match(webhook, /yo-me-encargo-test97\.vercel\.app/)
+test('cotizaciones Whatsapp enlazan dominio real y mantienen session + token', () => {
+  assert.match(webhook, /yomeencargo\.cl/)
   assert.match(webhook, /session=\$\{encodeURIComponent\(session\.id\)\}/)
   assert.match(webhook, /token=\$\{encodeURIComponent\(session\.resume_token\)\}/)
 })
-test('Flow devuelve a test97 por defecto sin rehacer su pasarela', () => {
+test('Flow devuelve a yomeencargo.cl por defecto sin rehacer su pasarela', () => {
   const file = read('src/lib/quoteCheckout.ts')
-  assert.match(file, /yo-me-encargo-test97\.vercel\.app/)
+  assert.match(file, /yomeencargo\.cl/)
   assert.match(file, /flowService\.createPayment/)
 })
 test('guardar originales por ID de mensaje y persistir rutas en state', () => {

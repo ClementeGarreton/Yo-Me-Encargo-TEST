@@ -65,7 +65,7 @@ async function processPaymentResult(token: string, baseUrl: string) {
 
     // Usar NEXT_PUBLIC_APP_URL para asegurar que siempre redirigimos al dominio correcto
     // (evita problemas cuando Flow redirige desde una URL antigua).
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
     const origin = new URL(appUrl).origin
 
     // Misma lógica que el webhook: resuelve la reserva por optional.bookingId y actualiza el
@@ -150,7 +150,7 @@ export async function GET(request: NextRequest) {
 
         if (!token) {
             console.error('Error: No token provided in query params')
-            const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+            const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
             const origin = new URL(appUrl).origin
             const html = createRedirectHtml(`${origin}/pago/error?reason=no_token`, 'Error')
             return new NextResponse(html, {
@@ -165,7 +165,7 @@ export async function GET(request: NextRequest) {
         })
     } catch (error) {
         console.error('Error processing payment result GET (Critical):', error)
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
         const origin = new URL(appUrl).origin
         const html = createRedirectHtml(`${origin}/pago/error?reason=error`, 'Error')
         return new NextResponse(html, {
@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
 
         if (!token) {
             console.error('Error: No token provided in POST body')
-            const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+            const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
             const origin = new URL(appUrl).origin
             const html = createRedirectHtml(`${origin}/pago/error?reason=no_token`, 'Error')
             return new NextResponse(html, {
@@ -199,7 +199,7 @@ export async function POST(request: NextRequest) {
         })
     } catch (error) {
         console.error('Error processing payment result POST (Critical):', error)
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.NODE_ENV === 'production' ? 'https://yomeencargo.cl' : 'http://localhost:3000')
         const origin = new URL(appUrl).origin
         const html = createRedirectHtml(`${origin}/pago/error?reason=error`, 'Error')
         return new NextResponse(html, {

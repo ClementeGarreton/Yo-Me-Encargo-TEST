@@ -36,6 +36,7 @@ import { supabaseAdmin } from '@/lib/supabase'
 import { WHATSAPP_WELCOME, botCommand, decideBotAction, isQuoteExpired } from '@/lib/whatsapp/botRouter'
 import { claimFirstWelcome, claimIncomingMessage, ensureBotState, moveIncomingToConversation, refreshQuoteActivity, releaseFailedWelcome, setBotMode, touchIdleActivity } from '@/lib/whatsapp/botStateStore'
 import type { WhatsAppBotState } from '@/lib/whatsapp/botRouter'
+import { isContactBotLocked, findContactRouter } from '@/lib/admin/conversationControls'
 
 
 const GREETING_ONLY = /^(hola|holi|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|ola)[!.\s]*$/i
@@ -106,6 +107,18 @@ async function sendAndLog(conversationId: string, to: string, text: string) {
     content: text,
     externalMessageId: externalId,
   })
+}
+
+/** También auditar la bienvenida y los controles, que suceden sin cotización activa. */
+async function sendRouterReply(contactKey: string, to: string, text: string) {
+  const result = await sendWhatsAppText(to, text)
+  try {
+    const router = await findContactRouter(contactKey)
+    if (router) await logMessage({ conversationId: router.id, direction: 'outbound', role: 'assistant',
+      content: text, externalMessageId: result?.messages?.[0]?.id || null })
+  } catch (error) {
+    console.error('[Inbox] Error auditando mensaje emitido (el envío sí ocurrió):', error)
+  }
 }
 
 /** Muestra los artículos que realmente se utilizarán para calcular el PDF. */
@@ -205,7 +218,7 @@ async function finalizeQuote(session: QuoteSessionRow, conversationId: string, t
     customer_name: session.state.personalInfo.name,
   })
 
-  const site = (process.env.WHATSAPP_QUOTE_BASE_URL || 'https://yo-me-encargo-test97.vercel.app').replace(/\/$/, '')
+  const site = (process.env.WHATSAPP_QUOTE_BASE_URL || 'https://yomeencargo.cl').replace(/\/$/, '')
   const resumeUrl = `${site}/cotizador?session=${encodeURIComponent(session.id)}&token=${encodeURIComponent(session.resume_token)}`
 
   const summary = [
@@ -255,6 +268,31 @@ async function deactivateBot(phone: string, bot: WhatsAppBotState, mode: 'idle' 
   await setBotMode(phone, mode)
 }
 
+/** Reflejar actividad de atención manual en la bandeja sin alterar relojes de cotización. */
+async function touchManualInbox(contactKey: string) {
+  const router = await findContactRouter(contactKey)
+  if (!router) return
+  const { error } = await supabaseAdmin.from('ai_conversations')
+    .update({ last_message_at: new Date().toISOString() }).eq('id', router.id)
+  if (error) console.error('[Inbox] No se pudo actualizar último mensaje humano:', error.message)
+}
+
+/** Conserva imágenes recibidas fuera del cotizador, asociadas al contacto. */
+async function archiveHumanImage(contactKey: string, messageId: string, mediaId: string) {
+  try {
+    const router = await findContactRouter(contactKey)
+    if (!router) return
+    const imageData = await downloadWhatsAppMediaAsDataUrl(mediaId)
+    const saved = await saveQuotePhoto(router.id, messageId, imageData)
+    const { error } = await supabaseAdmin.from('ai_messages')
+      .update({ metadata: { storagePath: saved.storagePath, archived: true } })
+      .eq('external_message_id', messageId).eq('conversation_id', router.id)
+    if (error) throw new Error(error.message)
+  } catch (error) {
+    console.error('[Inbox] No se pudo conservar imagen de atención humana:', error)
+  }
+}
+
 export async function processIncoming(message: ReturnType<typeof extractMessages>[number]) {
   // Interruptor de emergencia de Vercel. Nunca llama a OpenAI con el bot apagado.
   if (process.env.WHATSAPP_BOT_ENABLED === 'false') {
@@ -273,7 +311,25 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     return
   }
 
+  // La secretaria y los contactos silenciados desde el panel nunca invocan IA.
+  // Aun así se conserva el mensaje para auditoría; no se contesta por esta línea.
+  const context = messageContext.getStore()
+  const forbiddenBusinessNumbers = (process.env.WHATSAPP_BOT_DISABLED_PHONE_IDS || '')
+    .split(',').map(value => value.trim()).filter(Boolean)
+  const manuallyHandled = context?.platform === 'whatsapp' && (
+    forbiddenBusinessNumbers.includes(context.businessPhoneId) ||
+    (Boolean(process.env.WHATSAPP_SECRETARY_PHONE_NUMBER_ID) && context.businessPhoneId === process.env.WHATSAPP_SECRETARY_PHONE_NUMBER_ID)
+  )
+  const locked = manuallyHandled || await isContactBotLocked(phone)
+  if (locked) {
+    await touchManualInbox(phone)
+    if (message.type === 'image' && message.imageId) await archiveHumanImage(phone, message.id, message.imageId)
+    return // Silencio absoluto: no cotiza, no saluda, no hace llamadas a OpenAI.
+  }
   const bot = await ensureBotState(phone)
+  if (message.type === 'image' && bot.mode !== 'quoting' && message.imageId) {
+    await archiveHumanImage(phone, message.id, message.imageId)
+  }
   const decision = decideBotAction(message.text, bot)
   if (messageContext.getStore()?.platform === 'instagram') {
     console.info('[Instagram][motor]', JSON.stringify({ decision, mode: bot.mode, greeted: Boolean(bot.greeted_at) }))
@@ -284,7 +340,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     const claimAt = await claimFirstWelcome(phone)
     if (!claimAt) return
     try {
-      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+      await sendRouterReply(phone, to, WHATSAPP_WELCOME)
     } catch (error) {
       await releaseFailedWelcome(phone, claimAt)
       throw error
@@ -315,11 +371,11 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
   if (decision === 'human' || decision === 'exit' || decision === 'menu') {
     await deactivateBot(phone, bot, decision === 'human' ? 'human' : 'idle')
     if (decision === 'human') {
-      await sendWhatsAppText(to, 'Te atenderá una persona por este mismo chat. El asistente automático queda desactivado. Para cotizar con IA, escribe *COTIZAR*.')
+      await sendRouterReply(phone, to, 'Te atenderá una persona por este mismo chat. El asistente automático queda desactivado. Para cotizar con IA, escribe *COTIZAR*.')
     } else if (decision === 'exit') {
-      await sendWhatsAppText(to, 'Atención automática finalizada. Puedes escribir *COTIZAR* para comenzar otra cotización o *ASESOR* para atención humana.')
+      await sendRouterReply(phone, to, 'Atención automática finalizada. Puedes escribir *COTIZAR* para comenzar otra cotización o *ASESOR* para atención humana.')
     } else {
-      await sendWhatsAppText(to, WHATSAPP_WELCOME)
+      await sendRouterReply(phone, to, WHATSAPP_WELCOME)
     }
     return
   }
@@ -328,7 +384,7 @@ export async function processIncoming(message: ReturnType<typeof extractMessages
     // No se envían mensajes espontáneos. Al siguiente mensaje del cliente,
     // se informa una sola vez que la autorización ya caducó.
     await deactivateBot(phone, bot, 'idle')
-    await sendWhatsAppText(to, `¡Hola de nuevo! 😊💚
+    await sendRouterReply(phone, to, `¡Hola de nuevo! 😊💚
 
 Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró automáticamente, pero ¡no te preocupes! Estamos encantados de ayudarte nuevamente.
 
@@ -346,6 +402,7 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
 
   if (decision === 'silent') {
     if (bot.mode === 'idle') await touchIdleActivity(phone)
+    else if (bot.mode === 'human') await touchManualInbox(phone)
     return // Atención humana: silencio total, no llama OpenAI.
   }
 
@@ -364,7 +421,7 @@ Parece que nos tomamos un pequeño descanso. Tu cotización anterior se cerró a
   if (error) throw new Error(error.message)
   if (!data || !['collecting', 'ready'].includes(data.status)) {
     await setBotMode(phone, 'idle')
-    await sendWhatsAppText(to, 'La cotización anterior ya no está activa. Escribe *COTIZAR* para iniciar otra o *ASESOR* para atención humana.')
+    await sendRouterReply(phone, to, 'La cotización anterior ya no está activa. Escribe *COTIZAR* para iniciar otra o *ASESOR* para atención humana.')
     return
   }
   let session = data as QuoteSessionRow
