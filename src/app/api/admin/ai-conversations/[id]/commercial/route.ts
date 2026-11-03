@@ -8,9 +8,12 @@ export const dynamic = 'force-dynamic'
 export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
   const actor = getActorFromRequest(request)
   if (!actor) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-  const body = await request.json().catch(() => null)
-  if (!isCommercialStatus(body?.status)) return NextResponse.json({ error: 'Estado no válido' }, { status: 400 })
-  const note = String(body?.note || '').trim()
+  const payload: unknown = await request.json().catch(() => null)
+  const body: Record<string, unknown> = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {}
+  if (!isCommercialStatus(body.status)) return NextResponse.json({ error: 'Estado no válido' }, { status: 400 })
+  const status = body.status
+  const note = String(body.note || '').trim()
   if (note.length > 500) return NextResponse.json({ error: 'Observación demasiado extensa' }, { status: 400 })
 
   const { data: conversation, error: findError } = await supabaseAdmin.from('ai_conversations')
@@ -23,17 +26,17 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     .eq('action', 'crm_status_changed').order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (previousError) return NextResponse.json({ error: previousError.message }, { status: 500 })
   const from = eventStatus(previous)
-  if (from === body.status) return NextResponse.json({ ok: true, status: from, unchanged: true })
+  if (from === status) return NextResponse.json({ ok: true, status: from, unchanged: true })
   const { data: action, error } = await supabaseAdmin.from('ai_actions')
     .insert({ conversation_id: params.id, action: 'crm_status_changed', success: true,
-      structured_payload: { from, to: body.status, note, actor: actor.username, actorId: actor.id } })
+      structured_payload: { from, to: status, note, actor: actor.username, actorId: actor.id } })
     .select('id,created_at').single()
   if (error || !action) return NextResponse.json({ error: error?.message || 'No se guardó el estado' }, { status: 500 })
 
   await logAdminAction({ actor, request, action: 'conversation.commercial_status_changed',
     entityType: 'ai_conversation', entityId: params.id,
     entityLabel: conversation.customer_name || conversation.external_user_id || 'Conversación',
-    summary: `Estado comercial: ${COMMERCIAL_LABELS[from]} → ${COMMERCIAL_LABELS[body.status]}`,
-    changes: { commercial_status: { from, to: body.status } } })
-  return NextResponse.json({ ok: true, status: body.status, actionId: action.id })
+    summary: `Estado comercial: ${COMMERCIAL_LABELS[from]} → ${COMMERCIAL_LABELS[status]}`,
+    changes: { commercial_status: { from, to: status } } })
+  return NextResponse.json({ ok: true, status: status, actionId: action.id })
 }
